@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Local Terminal</title>
+    <meta charset="utf-8" />
+    <link
+        href="https://unpkg.com/tailwindcss@^2.0/dist/tailwind.min.css"
+        rel="stylesheet"
+    >
+    <style>
+        /** How to override theme **/
+        :root {
+            /*--font-size: 14px !important;*/
+            /*--line-height: 24px !important;*/
+            /*--text-color: #d4d4d4 !important;*/
+            /*--background-color: #1e1e1e !important;*/
+            /*--cursor-color: rgba(255, 255, 255, 0.36) !important;*/
+            /*--selection-color: rgba(58, 119, 215, 0.36) !important;*/
+            /*--error-color: rgba(255, 0, 0, 0.6) !important;*/
+            /*--error-text-color: white !important;*/
+        }
+
+        /** Syntax Highlighting **/
+        .syntax-variable {
+            color: rgb(152, 118, 170)
+        }
+
+        .syntax-string,
+        .syntax-multiline-string {
+            color: rgb(43, 179, 103);
+        }
+
+        .syntax-import,
+        .syntax-module-export,
+        .syntax-case,
+        .syntax-of,
+        .syntax-if,
+        .syntax-then,
+        .syntax-else,
+        .syntax-let,
+        .syntax-in {
+            color: darkorange;
+        }
+
+        .syntax-function-def,
+        .syntax-function-type-sig {
+            color: #f5ff66;
+        }
+
+        .syntax-module {
+            color: lightgreen;
+        }
+
+        .syntax-comment,
+        .syntax-multiline-comment {
+            color: lightslategrey;
+        }
+
+        .syntax-parens,
+        .syntax-equals,
+        .syntax-comma,
+        .syntax-open-brace,
+        .syntax-close-brace,
+        .syntax-open-bracket,
+        .syntax-close-bracket,
+        .syntax-pipe,
+        .syntax-backslash,
+        .syntax-number {
+            color: cornflowerblue;
+        }
+
+        .syntax-skinny-arrow,
+        .syntax-left-compose,
+        .syntax-right-compose,
+        .syntax-forward-slash,
+        .syntax-minus,
+        .syntax-plus,
+        .syntax-star,
+        .syntax-double-colon,
+        .syntax-percent {
+            color: indianred;
+        }
+    </style>
+</head>
+<body>
+<div style="height: 300px;width:700px;">
+    <div id="app"></div>
+</div>
+
+<script src="main.js"></script>
+
+<script>
+  let app
+
+  window.addEventListener('load', function () {
+    app = Elm.Main.init({
+      node: document.getElementById('app'),
+      flags: {}
+    })
+
+    setupPorts()
+
+    function setupPorts() {
+      /**
+       * Ports
+       */
+      app.ports.requestRunTerminal.subscribe(({ contents }) => {
+        //
+      })
+
+      app.ports.requestPasteTerminal.subscribe(async () => {
+        //
+      })
+
+      app.ports.requestSetupTerminalResizeObserver.subscribe(() => {
+        //
+      })
+
+      app.ports.receiveTerminalOutput.send([
+        { 'command': '[m', 'argument': 1 }, { 'command': '[m', 'argument': 7 }, '%', {
+          'command': '[m',
+          'argument': 1
+        }, {
+          'command': '[m',
+          'argument': 0
+        }, '                                                                 ', { 'command': '\r' }, ' ', { 'command': '\r' }, {
+          'command': 'set-window-title',
+          'argument': 'loganhenson@logan: ~/Desktop/vterm'
+        }, { 'command': 'set-icon-name', 'argument': '~/Desktop/vterm' },
+        { 'command': '\r' }, { 'command': '[m', 'argument': 0 }, { 'command': '[J' }, {
+          'command': '[m',
+          'argument1': 1,
+          'argument2': 32
+        }, '➜  ', { 'command': '[m', 'argument': 36 }, 'vterm', {
+          'command': '[m',
+          'argument': 0
+        }, ' ', { 'command': '[m', 'argument1': 1, 'argument2': 34 }, 'git:(', {
+          'command': '[m',
+          'argument': 31
+        }, 'main', { 'command': '[m', 'argument': 34 }, ') ', {
+          'command': '[m',
+          'argument': 33
+        }, '✗', { 'command': '[m', 'argument': 0 }, ' ', { 'command': '[K' }
+      ])
+    }
+  })
+</script>
+</body>
+</html>

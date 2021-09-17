@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Local Editor</title>
+    <link
+        href="https://unpkg.com/tailwindcss@^1.0/dist/tailwind.min.css"
+        rel="stylesheet"
+    >
+    <style>
+        /** How to override theme **/
+        :root {
+            /*--font-size: 14px !important;*/
+            /*--line-height: 24px !important;*/
+            /*--text-color: #d4d4d4 !important;*/
+            /*--background-color: #1e1e1e !important;*/
+            /*--cursor-color: rgba(255, 255, 255, 0.36) !important;*/
+            /*--selection-color: rgba(58, 119, 215, 0.36) !important;*/
+            /*--error-color: rgba(255, 0, 0, 0.6) !important;*/
+            /*--error-text-color: white !important;*/
+        }
+
+        /** Syntax Highlighting **/
+        .syntax-variable {
+            color: rgb(152, 118, 170)
+        }
+
+        .syntax-string,
+        .syntax-multiline-string {
+            color: rgb(43, 179, 103);
+        }
+
+        .syntax-import,
+        .syntax-module-export,
+        .syntax-case,
+        .syntax-of,
+        .syntax-if,
+        .syntax-then,
+        .syntax-else,
+        .syntax-let,
+        .syntax-in {
+            color: darkorange;
+        }
+
+        .syntax-function-def,
+        .syntax-function-type-sig {
+            color: #f5ff66;
+        }
+
+        .syntax-module {
+            color: lightgreen;
+        }
+
+        .syntax-comment,
+        .syntax-multiline-comment {
+            color: lightslategrey;
+        }
+
+        .syntax-parens,
+        .syntax-equals,
+        .syntax-comma,
+        .syntax-open-brace,
+        .syntax-close-brace,
+        .syntax-open-bracket,
+        .syntax-close-bracket,
+        .syntax-pipe,
+        .syntax-backslash,
+        .syntax-number {
+            color: cornflowerblue;
+        }
+
+        .syntax-skinny-arrow,
+        .syntax-left-compose,
+        .syntax-right-compose,
+        .syntax-forward-slash,
+        .syntax-minus,
+        .syntax-plus,
+        .syntax-star,
+        .syntax-double-colon,
+        .syntax-percent {
+            color: indianred;
+        }
+    </style>
+</head>
+<body>
+<div style="height: 300px;width:700px;">
+    <div id="app"></div>
+</div>
+
+<script src="main.js"></script>
+
+<script>
+  let app
+
+  window.addEventListener('load', function () {
+    app = Elm.Main.init({
+      node: document.getElementById('app'),
+      flags: {}
+    })
+
+    setupPorts()
+
+    setInterval(() => {
+      // send some errors
+      app.ports.receiveErrors.send([
+        {
+          line: 4,
+          col: 1,
+          message: `Seems Wrong`
+        }
+      ])
+    }, 1000)
+  })
+
+  function setupPorts() {
+    /**
+     * Ports
+     */
+    app.ports.requestChange.subscribe((contents) => {
+      app.ports.receiveChange.send(contents)
+    })
+
+    /**
+     * requestCopy
+     */
+    app.ports.requestCopy.subscribe(copyToClipboard)
+
+    /**
+     * requestPaste
+     */
+    app.ports.requestPaste.subscribe(() => {
+      navigator.clipboard.readText().then(text => app.ports.receivePaste.send(text))
+    })
+
+    /**
+     * Functions
+     */
+    function copyToClipboard(contents) {
+      const el = document.createElement('textarea')
+      el.value = contents
+      el.setAttribute('readonly', '')
+      el.style.position = 'absolute'
+      el.style.left = '-9999px'
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+    }
+  }
+
+  document.documentElement.addEventListener('keydown', (e) => {
+    // Disable default browser events, key.code seems the best supported atm.
+    if ([
+      'Tab',
+      'Space',
+      'Shift',
+      'ArrowDown',
+      'ArrowUp',
+      'ArrowLeft',
+      'ArrowRight',
+    ].indexOf(e.code) !== -1) {
+      e.preventDefault()
+    }
+
+    // Override (cmd||ctrl)+s for save.
+    if (e.code === 'KeyS' && (navigator.platform.match('Mac') ? e.metaKey : e.ctrlKey)) {
+      e.preventDefault()
+    }
+
+    // Override (cmd||ctrl)+a
+    if (e.code === 'KeyA' && (navigator.platform.match('Mac') ? e.metaKey : e.ctrlKey)) {
+      e.preventDefault()
+    }
+  }, false)
+</script>
+</body>
+</html>

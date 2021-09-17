@@ -1,0 +1,24 @@
+{
+  "name": "local",
+  "version": "1.0.0",
+  "description": "local",
+  "devDependencies": {
+    "elm": "^0.19.1-5",
+    "elm-live": "^4.0.2",
+    "elm-test": "^0.19.1-revision7"
+  },
+  "scripts": {
+    "start": "elm-live src/Main.elm --open --start-page=index.html -- --output=main.js",
+    "test": "elm-test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loganhenson/editor.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/loganhenson/terminal/issues"
+  },
+  "homepage": "https://github.com/loganhenson/terminal#readme"
+}

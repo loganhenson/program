@@ -1,0 +1,35 @@
+*,
+*::before,
+*::after {
+    border-color: transparent;
+}
+
+/** How to override theme **/
+:root {
+    /*--font-size: 14px !important;*/
+    /*--line-height: 24px !important;*/
+    /*--text-color: #d4d4d4 !important;*/
+    --background-color: #262626 !important;
+    /*--cursor-color: rgba(255, 255, 255, 0.36) !important;*/
+    /*--selection-color: rgba(58, 119, 215, 0.36) !important;*/
+    /*--error-color: rgba(255, 0, 0, 0.6) !important;*/
+    /*--error-text-color: white !important;*/
+}
+
+#editor {
+    overflow: hidden !important;
+}
+
+#editor-container {
+    overflow: hidden !important;
+}
+
+#editor-rendered {
+    overflow-x: hidden !important;
+}
+
+body {
+    margin: 0;
+    background: var(--background-color);
+    color: #d4d4d4;
+}
