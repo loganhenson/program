@@ -706,7 +706,7 @@ fn it_can_handle_bell_escape() {
 
 #[test]
 fn it_can_handle_st_terminator() {
-  let result = parse("start\u{1b}]11;?\u{1b}\\end", |_output| {});
+  let result = parse("start\u{1b}]11;?\u{1b}\\\u{1b}nd", |_output| {});
 
   assert_eq!(
     result,
@@ -715,7 +715,7 @@ fn it_can_handle_st_terminator() {
       TerminalCommand::TerminalCommandQuerySequence {
         command: String::from("]11;?\u{1b}\\"),
       },
-      TerminalCommand::Text(String::from("end")),
+      TerminalCommand::TerminalCommandPartial(String::from("\u{1b}nd")),
     ]
   );
 }
@@ -885,45 +885,62 @@ fn it_parses_weird_vim_thing_2_number_variants() {
 fn it_parses_text_formatting_with_bright_bold_modifier() {
   let result = parse("\u{1b}[1;38;5;203m", |_output| {});
 
-  assert_eq!(result, [
-    TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+  assert_eq!(
+    result,
+    [TerminalCommand::TerminalCommandSequenceAndSingleArgument {
       command: String::from("[m-fg-256"),
       argument: 203
-    }
-  ]);
+    }]
+  );
 }
 
 #[test]
 fn it_parses_text_formatting_with_non_bright_bold_modifier() {
   let result = parse("\u{1b}[0;38;5;203m", |_output| {});
 
-  assert_eq!(result, [
-    TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+  assert_eq!(
+    result,
+    [TerminalCommand::TerminalCommandSequenceAndSingleArgument {
       command: String::from("[m-fg-256"),
       argument: 203
-    }
-  ]);
+    }]
+  );
 }
 
 #[test]
 fn it_parses_delete_line_without_a_number() {
   let result = parse("\u{1b}[M", |_output| {});
 
-  assert_eq!(result, [
-    TerminalCommand::TerminalCommandSequence {
+  assert_eq!(
+    result,
+    [TerminalCommand::TerminalCommandSequence {
       command: String::from("[M"),
-    }
-  ]);
+    }]
+  );
 }
 
 #[test]
 fn it_parses_delete_line_with_number() {
   let result = parse("\u{1b}[5M", |_output| {});
 
-  assert_eq!(result, [
-    TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+  assert_eq!(
+    result,
+    [TerminalCommand::TerminalCommandSequenceAndSingleArgument {
       command: String::from("[M"),
       argument: 5,
-    }
-  ]);
+    }]
+  );
+}
+
+#[test]
+fn it_parses_text_correctly_when_ending_in_an_escape() {
+  let result = parse("bin\u{1b}", |_output| {});
+
+  assert_eq!(
+    result,
+    [
+      TerminalCommand::Text(String::from("bin")),
+      TerminalCommand::TerminalCommandPartial(String::from("\u{1b}"))
+    ]
+  );
 }

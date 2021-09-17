@@ -144,6 +144,14 @@ pub fn parse(data: &str, mut output: impl FnMut(TerminalCommand) -> ()) -> Vec<T
     }
 
     if !mid_sequence && String::from(char) == escape {
+      if subcollector.len() != 0 {
+        // Handle Raw Output
+        let command = TerminalCommand::Text(subcollector.clone());
+        collected.push(command.clone());
+        output(command);
+        subcollector = "".to_string();
+      }
+
       if index == length {
         let command = TerminalCommand::TerminalCommandPartial(String::from("\u{1b}"));
         collected.push(command.clone());
@@ -153,14 +161,6 @@ pub fn parse(data: &str, mut output: impl FnMut(TerminalCommand) -> ()) -> Vec<T
       }
 
       mid_sequence = true;
-
-      if subcollector.len() != 0 {
-        // Handle Raw Output
-        let command = TerminalCommand::Text(subcollector.clone());
-        collected.push(command.clone());
-        output(command);
-        subcollector = "".to_string();
-      }
 
       continue;
     }

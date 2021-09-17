@@ -7,10 +7,10 @@
   "js": "esbuild js/main.js --bundle --outfile=built/js/main.js",
   "js:watch": "chokidar 'js/**/*.js' -c 'npm run js'",
   "elm": "elm make src/Main.elm --output built/elm.js",
-  "elm:watch": "chokidar 'src/**/*.elm' '/Users/loganhenson/editor/src/**/*.elm' '/Users/loganhenson/terminal/src/**/*.elm' -c 'npm run elm'",
+  "elm:watch": "chokidar 'src/**/*.elm' '../editor/src/**/*.elm' '../terminal/src/**/*.elm' -c 'npm run elm'",
   "elm:optimize": "elm make src/Main.elm --optimize --output built/elm.js",
   "css": "npx postcss css/main.css -o built/main.css",
-  "css:watch": "chokidar 'css/**/*.css' '/Users/loganhenson/editor/css/**/*.css' -c 'npm run css'",
+  "css:watch": "chokidar 'css/**/*.css' '../editor/css/**/*.css' -c 'npm run css'",
   "watch": "concurrently \"npm:elm\" \"npm:css\" \"npm:js\" \"npm:elm:watch\" \"npm:css:watch\" \"npm:js:watch\" \"npm:start\" --kill-others-on-fail"
  },
  "devDependencies": {
