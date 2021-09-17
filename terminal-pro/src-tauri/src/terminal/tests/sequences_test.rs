@@ -215,8 +215,8 @@ fn it_can_parse_initial_escape_sequences_from_shell() {
     result,
     [
       TerminalCommand::TerminalCommandSequenceAndSingleArgument { command: String::from("[m"), argument: 1 },
-      TerminalCommand::TerminalCommandSequenceAndSingleArgument { command: String::from("[m"), argument: 7 }, 
-      TerminalCommand::Text(String::from("%")), 
+      TerminalCommand::TerminalCommandSequenceAndSingleArgument { command: String::from("[m"), argument: 7 },
+      TerminalCommand::Text(String::from("%")),
       TerminalCommand::TerminalCommandSequenceAndSingleArgument { command: String::from("[m"), argument: 27 },
       TerminalCommand::TerminalCommandSequenceAndSingleArgument { command: String::from("[m"), argument: 1 },
       TerminalCommand::TerminalCommandSequenceAndSingleArgument { command: String::from("[m"), argument: 0 },
@@ -943,4 +943,11 @@ fn it_parses_text_correctly_when_ending_in_an_escape() {
       TerminalCommand::TerminalCommandPartial(String::from("\u{1b}"))
     ]
   );
+}
+
+#[test]
+fn it_ignores_1000_h() {
+  let result = parse("\u{1b}[?1000h", |_output| {});
+
+  assert_eq!(result, []);
 }

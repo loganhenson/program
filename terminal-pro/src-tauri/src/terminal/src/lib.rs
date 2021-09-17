@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-const IGNORED_SEQUENCES: [&str; 58] = [
+const IGNORED_SEQUENCES: [&str; 59] = [
   "[>4;m",        // ??
   "[?12h",        // Text Cursor Enable Blinking
   "[?40h",        // ??
@@ -37,6 +37,7 @@ const IGNORED_SEQUENCES: [&str; 58] = [
   "[201~",        // bracketed paste end
   "[?1004l",      // ??
   "[?1004h",      // ??
+  "[?1000h",      // ??
   "[?1002h",      // ??
   "[?1006h",      // ??
   "[?1006;1000h", // mouse tracking ??
