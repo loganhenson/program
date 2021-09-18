@@ -1,5 +1,6 @@
 module MetaPressedWithInsertModeTest exposing (..)
 
+import Editor
 import Editor.Keys exposing (update)
 import Editor.Lib exposing (renderableLinesToContents)
 import Editor.Msg exposing (Mode(..), Selection)
@@ -18,12 +19,7 @@ suite =
                     let
                         startingModel =
                             initModel "test"
-                                { vimMode = True
-                                , showLineNumbers = True
-                                , padBottom = True
-                                , padRight = True
-                                , showCursor = True
-                                }
+                                Editor.initialConfig
 
                         key =
                             Down
@@ -46,12 +42,7 @@ suite =
                     let
                         startingModel =
                             initModel "test"
-                                { vimMode = True
-                                , showLineNumbers = True
-                                , padBottom = True
-                                , padRight = True
-                                , showCursor = True
-                                }
+                                Editor.initialConfig
 
                         key =
                             Down

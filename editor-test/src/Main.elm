@@ -2,7 +2,7 @@ module Main exposing (main)
 
 import Browser
 import Dict exposing (Dict)
-import Editor
+import Editor exposing (initialPorts)
 import Editor.Lib
 import Editor.Msg
 import Html exposing (div, text)
@@ -38,14 +38,15 @@ init _ =
 
 ports : Editor.Msg.Ports
 ports =
-    { requestPaste = Ports.requestPaste
-    , requestRun = \_ -> Cmd.none
-    , requestCopy = Ports.requestCopy
-    , requestCompletion = \_ -> Cmd.none
-    , requestChange = \contents -> Ports.requestChange contents
-    , requestCharacterWidth = Ports.requestCharacterWidth
-    , receiveCharacterWidth = Ports.receiveCharacterWidth
-    , requestSave = \_ -> Cmd.none
+    { initialPorts
+        | requestPaste = Ports.requestPaste
+        , requestRun = \_ -> Cmd.none
+        , requestCopy = Ports.requestCopy
+        , requestCompletion = \_ -> Cmd.none
+        , requestChange = \contents -> Ports.requestChange contents
+        , requestCharacterWidth = Ports.requestCharacterWidth
+        , receiveCharacterWidth = Ports.receiveCharacterWidth
+        , requestSave = \_ -> Cmd.none
     }
 
 

@@ -1,4 +1,4 @@
-module Editor exposing (subscriptions, update, view)
+module Editor exposing (initialConfig, initialPorts, subscriptions, update, view)
 
 import Browser.Events exposing (onMouseUp)
 import Editor.Clipboard
@@ -24,6 +24,30 @@ import List
 import List.Extra
 
 
+initialConfig : Editor.Msg.Config
+initialConfig =
+    { vimMode = True
+    , showLineNumbers = True
+    , padBottom = True
+    , padRight = True
+    , showCursor = True
+    , characterWidth = 8.0
+    }
+
+
+initialPorts : Editor.Msg.Ports
+initialPorts =
+    { requestPaste = \_ -> Cmd.none
+    , requestRun = \_ -> Cmd.none
+    , requestCopy = \_ -> Cmd.none
+    , requestCompletion = \_ -> Cmd.none
+    , requestChange = \_ -> Cmd.none
+    , requestCharacterWidth = \_ -> Cmd.none
+    , receiveCharacterWidth = \_ -> Sub.none
+    , requestSave = \_ -> Cmd.none
+    }
+
+
 update : Editor.Msg.Msg -> Editor.Msg.Model -> ( Editor.Msg.Model, Cmd Editor.Msg.Msg )
 update msg model =
     case model.active of
@@ -38,6 +62,9 @@ update msg model =
             case msg of
                 NoOp ->
                     ( model, Cmd.none )
+
+                FontChanged ->
+                    ( model, model.ports.requestCharacterWidth () )
 
                 Editor.Msg.RenderedScroll rendered ->
                     ( { model | travelable = { travelable | scrollLeft = rendered.scrollLeft } }, Cmd.none )
@@ -134,6 +161,7 @@ update msg model =
                         |> Editor.Lib.startUpdateEditor
                         |> Editor.Lib.updateDoubleTripleClick cursorPosition
                         |> Editor.Lib.updateCursorPosition cursorPosition
+                        |> Editor.Lib.addMsg (model.ports.requestCharacterWidth ())
                         |> Editor.Lib.updateEditor model
 
 

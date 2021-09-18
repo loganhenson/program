@@ -718,7 +718,7 @@ renderCursor config cursorPositions scrollLeft renderedCompletions =
             Html.span
                 ([ Html.Attributes.class "cursor"
                  , Html.Attributes.style "position" "absolute"
-                 , Html.Attributes.style "left" ("calc(" ++ (String.fromInt x) ++ "ch - " ++ (String.fromInt (scrollLeft)) ++ "px" ++ ")")
+                 , Html.Attributes.style "left" ("calc(" ++ String.fromInt x ++ "ch - " ++ String.fromInt scrollLeft ++ "px" ++ ")")
                  , Html.Attributes.style "top" (String.fromInt (y * Constants.lineHeight) ++ "px")
                  ]
                     ++ cursorStyles

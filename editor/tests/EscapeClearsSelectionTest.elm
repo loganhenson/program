@@ -1,5 +1,6 @@
 module EscapeClearsSelectionTest exposing (..)
 
+import Editor
 import Editor.Keys exposing (update)
 import Editor.Msg exposing (Mode(..), Selection)
 import Editor.RawKeyboard exposing (Msg(..), RawKey)
@@ -17,12 +18,7 @@ suite =
                     let
                         startingModel =
                             initModel "test"
-                                { vimMode = True
-                                , showLineNumbers = True
-                                , padBottom = True
-                                , padRight = True
-                                , showCursor = True
-                                }
+                                Editor.initialConfig
 
                         key =
                             Down
@@ -53,12 +49,7 @@ suite =
                     let
                         startingModel =
                             initModel "test"
-                                { vimMode = True
-                                , showLineNumbers = True
-                                , padBottom = True
-                                , padRight = True
-                                , showCursor = True
-                                }
+                                Editor.initialConfig
 
                         key =
                             Down

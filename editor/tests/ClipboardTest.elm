@@ -1,5 +1,6 @@
 module ClipboardTest exposing (..)
 
+import Editor
 import Editor.Clipboard
 import Editor.Lib exposing (renderableLinesToContents)
 import Editor.Msg exposing (Selection)
@@ -17,12 +18,7 @@ suite =
                     let
                         startingModel =
                             initModel "first line\nsecond line"
-                                { vimMode = True
-                                , showLineNumbers = True
-                                , padBottom = True
-                                , padRight = True
-                                , showCursor = True
-                                }
+                                Editor.initialConfig
 
                         ( _, afterCutTravelable ) =
                             Editor.Clipboard.cut { startingModel | selection = Just ( { x = 6, y = 0 }, { x = 6, y = 1 } ) }
@@ -41,12 +37,7 @@ suite =
                     let
                         startingModel =
                             initModel "undefined"
-                                { vimMode = True
-                                , showLineNumbers = True
-                                , padBottom = True
-                                , padRight = True
-                                , showCursor = True
-                                }
+                                Editor.initialConfig
 
                         afterPaste =
                             Editor.Clipboard.paste { startingModel | selection = Just ( { x = 1, y = 0 }, { x = 7, y = 0 } ) } " "
@@ -64,12 +55,7 @@ suite =
                 let
                     startingModel =
                         initModel "undefined"
-                            { vimMode = True
-                            , showLineNumbers = True
-                            , padBottom = True
-                            , padRight = True
-                            , showCursor = True
-                            }
+                            Editor.initialConfig
 
                     afterPaste =
                         Editor.Clipboard.paste { startingModel | selection = Just ( { x = 7, y = 0 }, { x = 1, y = 0 } ) } " "

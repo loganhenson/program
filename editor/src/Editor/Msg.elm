@@ -23,7 +23,7 @@ type alias Ports =
     , requestSave : String -> Cmd Msg
     , requestChange : String -> Cmd Msg
     , requestCharacterWidth : () -> Cmd Msg
-    , receiveCharacterWidth : (String -> Msg) -> Sub Msg
+    , receiveCharacterWidth : (Float -> Msg) -> Sub Msg
     , requestCompletion : CompletionRequest -> Cmd Msg
     }
 
@@ -165,6 +165,7 @@ type Msg
     | MouseClick EditorCoordinate
     | MouseDown EditorCoordinate
     | MouseUp EditorCoordinate
+    | FontChanged
     | WindowMouseUp ()
     | MouseMove EditorCoordinate
     | ClearSelection
