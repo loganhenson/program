@@ -13,11 +13,17 @@ port requestCopy : String -> Cmd msg
 port requestPaste : () -> Cmd msg
 
 
+port requestCharacterWidth : () -> Cmd msg
+
+
 
 -- Receiving Editor
 
 
 port receivePaste : (String -> msg) -> Sub msg
+
+
+port receiveCharacterWidth : (Float -> msg) -> Sub msg
 
 
 

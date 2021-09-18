@@ -3,7 +3,7 @@ module Terminal exposing (..)
 import Array
 import Browser.Dom exposing (getViewportOf, setViewportOf)
 import Dict exposing (Dict)
-import Editor
+import Editor exposing (initialPorts)
 import Editor.Lib
 import Editor.Msg
 import Editor.Syntax.Types exposing (MultilineSymbol)
@@ -48,6 +48,7 @@ makeEmptyScrollbackEditor terminalPorts =
                 , padBottom = False
                 , padRight = False
                 , showCursor = False
+                , characterWidth = 8.40625
                 }
                 terminalPorts
 
@@ -73,6 +74,7 @@ makeEmptyBuffer size terminalPorts =
                 , padBottom = False
                 , padRight = False
                 , showCursor = True
+                , characterWidth = 8.40625
                 }
                 terminalPorts
     in
@@ -81,19 +83,7 @@ makeEmptyBuffer size terminalPorts =
 
 terminalBufferPorts : Editor.Msg.Ports
 terminalBufferPorts =
-    { requestPaste = \_ -> Cmd.none
-    , requestRun = \_ -> Cmd.none
-    , requestCopy = \_ -> Cmd.none
-    , requestCompletion =
-        \completionRequest ->
-            Cmd.none
-    , requestChange =
-        \code ->
-            Cmd.none
-    , requestSave =
-        \code ->
-            Cmd.none
-    }
+    initialPorts
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

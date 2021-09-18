@@ -1,5 +1,6 @@
 module PortHandlers exposing (..)
 
+import Editor exposing (initialPorts)
 import Editor.Msg
 import Json.Encode
 import Ports
@@ -27,18 +28,12 @@ terminalPorts cwd =
 
 editorPorts : String -> Editor.Msg.Ports
 editorPorts cwd =
-    { requestPaste = Ports.requestPaste
-    , requestRun =
-        \code ->
-            Cmd.none
-    , requestCopy = Ports.requestCopy
-    , requestCompletion =
-        \completionRequest ->
-            Cmd.none
-    , requestChange =
-        \code ->
-            Cmd.none
-    , requestSave =
-        \code ->
-            Cmd.none
+    { initialPorts
+        | requestPaste = Ports.requestPaste
+        , requestRun =
+            \code ->
+                Cmd.none
+        , requestCopy = Ports.requestCopy
+        , requestCharacterWidth = Ports.requestCharacterWidth
+        , receiveCharacterWidth = Ports.receiveCharacterWidth
     }
