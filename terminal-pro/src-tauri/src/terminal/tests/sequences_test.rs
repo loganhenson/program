@@ -951,3 +951,10 @@ fn it_ignores_1000_h() {
 
   assert_eq!(result, []);
 }
+
+#[test]
+fn it_ignores_1000_l() {
+  let result = parse("\u{1b}[?1000l", |_output| {});
+
+  assert_eq!(result, []);
+}

@@ -5,22 +5,8 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-const IGNORED_SEQUENCES: [&str; 59] = [
+const IGNORED_SEQUENCES: [&str; 31] = [
   "[>4;m",        // ??
-  "[?12h",        // Text Cursor Enable Blinking
-  "[?40h",        // ??
-  "[?12l",        // Text Cursor Disable Blinking
-  "[?45l",        // ?
-  "[?3h",         // DECCOLM	Set Number of Columns to 132	Sets the console width to 132 columns wide.
-  "[?3l",         // DECCOLM	Set Number of Columns to 80	Sets the console width to 80 columns wide.?
-  "[?4l",         // ?
-  "[?5l",         // ?
-  "[?6l",         // ?
-  "[?7l",         // ?
-  "[?8l",         // ?
-  "[4l",          // Reset Mode: Replace Mode (Default, https://vt100.net/docs/vt510-rm/IRM.html)
-  "[4h",          // Reset Mode: Insert Mode
-  "[20l",         // ?? Some line feed mode?
   "[22;2t",       // ??
   "[22;1t",       // ??
   "[22;0;0t",     // ??
@@ -31,24 +17,10 @@ const IGNORED_SEQUENCES: [&str; 59] = [
   "(0",           // Designate Character Set – DEC Line Drawing	Enables DEC Line Drawing Mode
   "(B",           // Designate Character Set – US ASCII	Enables ASCII Mode (Default)?
   ")B",           // Set United States G0 character set ??
-  "[?2004h",      // enable bracketed paste
-  "[?2004l",      // disable bracketed paste
   "[200~",        // bracketed paste start
   "[201~",        // bracketed paste end
-  "[?1004l",      // ??
-  "[?1004h",      // ??
-  "[?1000h",      // ??
-  "[?1002h",      // ??
-  "[?1006h",      // ??
   "[?1006;1000h", // mouse tracking ??
   "[?1006;1000l", // mouse tracking ??
-  "[?1034h",      // ??
-  "[?1h",         // Set cursor key to application ??
-  "[?7h",         // Set cursor key to application ??
-  "[?8h",         // ??
-  "[?1l",         // set cursor key to cursor ??
-  "[?25l",        // hide cursor
-  "[?25h",        // show cursor
   "[>c",          // ??
   "[6n",          // ??
   "[23;0;0t", // restore window/icon title (https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Functions-using-CSI-_-ordered-by-the-final-character_s_)
@@ -401,7 +373,20 @@ pub fn parse(data: &str, mut output: impl FnMut(TerminalCommand) -> ()) -> Vec<T
 
       // Catchall ISC (Ignores a bunch of lowercase ISC sequences)
       lazy_static! {
-        static ref REGEX_CATCH_ALL_ISC: Regex = Regex::new(r"^\[([0-9]+)([a-z]{1})$").unwrap();
+        static ref REGEX_CATCH_ALL_ISC_Q: Regex = Regex::new(r"^\[([0-9]+)([a-z]{1})$").unwrap();
+      }
+      match REGEX_CATCH_ALL_ISC_Q.captures(&subcollector) {
+        Some(_) => {
+          subcollector = "".to_string();
+          mid_sequence = false;
+          continue;
+        }
+        None => (),
+      }
+
+      // Catchall ISC with ?
+      lazy_static! {
+        static ref REGEX_CATCH_ALL_ISC: Regex = Regex::new(r"^\[\?([0-9]+)([a-z]{1})$").unwrap();
       }
       match REGEX_CATCH_ALL_ISC.captures(&subcollector) {
         Some(_) => {
