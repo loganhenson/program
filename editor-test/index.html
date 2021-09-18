@@ -119,6 +119,12 @@
       app.ports.receiveChange.send(contents)
     })
 
+    app.ports.requestCharacterWidth.subscribe(() => {
+      app.ports.receiveCharacterWidth.send(
+          document.getElementById('character-width').getBoundingClientRect().width
+      )
+    })
+
     /**
      * requestCopy
      */

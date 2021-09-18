@@ -22,6 +22,8 @@ type alias Ports =
     , requestCopy : String -> Cmd Msg
     , requestSave : String -> Cmd Msg
     , requestChange : String -> Cmd Msg
+    , requestCharacterWidth : () -> Cmd Msg
+    , receiveCharacterWidth : (String -> Msg) -> Sub Msg
     , requestCompletion : CompletionRequest -> Cmd Msg
     }
 
@@ -106,6 +108,7 @@ type alias Config =
     , padBottom : Bool
     , padRight : Bool
     , showCursor : Bool
+    , characterWidth : Float
     }
 
 

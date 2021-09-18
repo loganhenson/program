@@ -144,7 +144,7 @@ viewLineNumbers config renderableLines =
             List.length renderableLines
     in
     Html.div
-        ([ Html.Attributes.style "width" ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth numberOfLines) ++ "px")
+        ([ Html.Attributes.style "width" ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth numberOfLines) ++ "px")
          ]
             ++ editorLineNumbersStyles config
         )
@@ -156,7 +156,7 @@ viewRendered config syntax renderableLines =
     Html.Keyed.node "div"
         ([ onScrollX Editor.Msg.RenderedScroll
          , id "editor-rendered"
-         , style "width" ("calc(100% - " ++ ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth (List.length renderableLines)) ++ "px"))
+         , style "width" ("calc(100% - " ++ ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth (List.length renderableLines)) ++ "px"))
          ]
             ++ renderedStyles config
         )
@@ -195,10 +195,10 @@ viewLine config syntax lineNumber renderableLine =
              else
                 ""
             )
-        , Editor.Lib.mouseEventToEditorPosition "click" Editor.Msg.MouseClick lineNumber
-        , Editor.Lib.mouseEventToEditorPosition "mousedown" Editor.Msg.MouseDown lineNumber
-        , Editor.Lib.mouseEventToEditorPosition "mousemove" Editor.Msg.MouseMove lineNumber
-        , Editor.Lib.mouseEventToEditorPosition "mouseup" Editor.Msg.MouseUp lineNumber
+        , Editor.Lib.mouseEventToEditorPosition "click" Editor.Msg.MouseClick lineNumber config.characterWidth
+        , Editor.Lib.mouseEventToEditorPosition "mousedown" Editor.Msg.MouseDown lineNumber config.characterWidth
+        , Editor.Lib.mouseEventToEditorPosition "mousemove" Editor.Msg.MouseMove lineNumber config.characterWidth
+        , Editor.Lib.mouseEventToEditorPosition "mouseup" Editor.Msg.MouseUp lineNumber config.characterWidth
         ]
         [ Html.Lazy.lazy4 Editor.Syntax.Util.viewLine syntax renderableLine.text renderableLine.multilineSymbols renderableLine.errors
         ]
@@ -219,9 +219,12 @@ viewEditor model =
             ]
          , Html.Attributes.style "min-height" ((String.fromInt <| Constants.lineHeight * List.length model.travelable.renderableLines) ++ "px")
          ]
-            ++ editorStyles model.config (Editor.Lib.getEditorLineNumbersWidth (List.length model.travelable.renderableLines))
+            ++ editorStyles model.config (Editor.Lib.getEditorLineNumbersWidth model.config.characterWidth (List.length model.travelable.renderableLines))
         )
         [ Html.node "style" [] [ Html.text editorPseudoStyles ]
+        , Html.span [ Html.Attributes.id "character-width", Html.Attributes.style "position" "absolute", Html.Attributes.style "left" "500px", Html.Attributes.style "visibility" "hidden" ]
+            [ Html.text "0"
+            ]
         , Html.Lazy.lazy3 viewRendered model.config model.syntax model.travelable.renderableLines
         , Html.Lazy.lazy4 Editor.Lib.renderCursor
             model.config
@@ -236,7 +239,7 @@ viewEditor model =
                 False ->
                     Html.text ""
             )
-        , Html.Lazy.lazy2 Editor.Lib.renderSelection model.selection model.travelable.scrollLeft
+        , Html.Lazy.lazy3 Editor.Lib.renderSelection model.config.characterWidth model.selection model.travelable.scrollLeft
         ]
 
 

@@ -43,6 +43,8 @@ ports =
     , requestCopy = Ports.requestCopy
     , requestCompletion = \_ -> Cmd.none
     , requestChange = \contents -> Ports.requestChange contents
+    , requestCharacterWidth = Ports.requestCharacterWidth
+    , receiveCharacterWidth = Ports.receiveCharacterWidth
     , requestSave = \_ -> Cmd.none
     }
 
@@ -113,6 +115,7 @@ update msg model =
                                 , padBottom = True
                                 , padRight = True
                                 , showCursor = True
+                                , characterWidth = 8.40625
                                 }
                                 ports
                             , Cmd.none

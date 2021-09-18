@@ -526,13 +526,13 @@ scrollToCursor ( model, msg ) =
                         (\rendered ->
                             let
                                 cursorColumn =
-                                    toFloat model.travelable.cursorPosition.x * Constants.characterWidth
+                                    toFloat model.travelable.cursorPosition.x * model.config.characterWidth
                             in
                             if cursorColumn < rendered.viewport.x then
                                 Browser.Dom.setViewportOf "editor-rendered" cursorColumn rendered.viewport.height
 
-                            else if cursorColumn > rendered.viewport.x + rendered.viewport.width - Constants.characterWidth then
-                                Browser.Dom.setViewportOf "editor-rendered" (cursorColumn - rendered.viewport.width + Constants.characterWidth) rendered.viewport.height
+                            else if cursorColumn > rendered.viewport.x + rendered.viewport.width - model.config.characterWidth then
+                                Browser.Dom.setViewportOf "editor-rendered" (cursorColumn - rendered.viewport.width + model.config.characterWidth) rendered.viewport.height
 
                             else
                                 Task.succeed ()
@@ -679,24 +679,29 @@ init active file contents config ports =
     }
 
 
-getEditorLineNumbersWidth : Int -> Float
-getEditorLineNumbersWidth numberOfLines =
-    max 40 ((*) Constants.characterWidth <| toFloat <| String.length (String.fromInt <| numberOfLines))
+getEditorLineNumbersWidth : Float -> Int -> Float
+getEditorLineNumbersWidth characterWidth numberOfLines =
+    max 40 ((*) characterWidth <| toFloat <| String.length (String.fromInt <| numberOfLines))
         + Constants.lineNumbersRightMargin
 
 
-mouseEventToEditorPosition : String -> (Editor.Msg.EditorCoordinate -> msg) -> Int -> Html.Attribute msg
-mouseEventToEditorPosition event msg lineNumber =
+mouseEventToEditorPosition : String -> (Editor.Msg.EditorCoordinate -> msg) -> Int -> Float -> Html.Attribute msg
+mouseEventToEditorPosition event msg lineNumber characterWidth =
     Html.Events.custom event <|
         Json.Decode.map (\message -> { message = message, preventDefault = False, stopPropagation = False }) <|
             Json.Decode.map
                 (\x ->
                     msg
-                        { x = round ((toFloat x - (Constants.characterWidth / 2)) / Constants.characterWidth)
+                        { x = pixelXToXCell characterWidth x
                         , y = lineNumber
                         }
                 )
                 (Json.Decode.field "offsetX" Json.Decode.int)
+
+
+pixelXToXCell : Float -> Int -> Int
+pixelXToXCell characterWidth x =
+    max 0 (round ((toFloat x - (characterWidth / 2)) / characterWidth))
 
 
 renderCursor : Editor.Msg.Config -> Editor.Msg.EditorCoordinate -> Int -> Html.Html msg -> Html.Html msg
@@ -713,7 +718,7 @@ renderCursor config cursorPositions scrollLeft renderedCompletions =
             Html.span
                 ([ Html.Attributes.class "cursor"
                  , Html.Attributes.style "position" "absolute"
-                 , Html.Attributes.style "left" ((String.fromFloat <| (toFloat x * Constants.characterWidth) - toFloat scrollLeft) ++ "px")
+                 , Html.Attributes.style "left" ("calc(" ++ (String.fromInt x) ++ "ch - " ++ (String.fromInt (scrollLeft)) ++ "px" ++ ")")
                  , Html.Attributes.style "top" (String.fromInt (y * Constants.lineHeight) ++ "px")
                  ]
                     ++ cursorStyles
@@ -750,8 +755,8 @@ renderCompletions selectedCompletionIndex completions =
         )
 
 
-renderSelection : Maybe Editor.Msg.Selection -> Int -> Html.Html msg
-renderSelection selection scrollLeft =
+renderSelection : Float -> Maybe Editor.Msg.Selection -> Int -> Html.Html msg
+renderSelection characterWidth selection scrollLeft =
     case selection of
         Just ( start, end ) ->
             case start.y == end.y of
@@ -760,17 +765,17 @@ renderSelection selection scrollLeft =
                         ([ Html.Attributes.style "left"
                             ((String.fromFloat <|
                                 (if start.x <= end.x then
-                                    toFloat start.x * Constants.characterWidth
+                                    toFloat start.x * characterWidth
 
                                  else
-                                    toFloat end.x * Constants.characterWidth
+                                    toFloat end.x * characterWidth
                                 )
                                     - toFloat scrollLeft
                              )
                                 ++ "px"
                             )
                          , Html.Attributes.style "top" (String.fromInt (start.y * Constants.lineHeight) ++ "px")
-                         , Html.Attributes.style "width" ((String.fromFloat <| toFloat (abs (start.x - end.x) + 1) * Constants.characterWidth) ++ "px")
+                         , Html.Attributes.style "width" ((String.fromFloat <| toFloat (abs (start.x - end.x) + 1) * characterWidth) ++ "px")
                          , Html.Attributes.style "height" (String.fromInt Constants.lineHeight ++ "px")
                          ]
                             ++ selectionStyles
@@ -781,7 +786,7 @@ renderSelection selection scrollLeft =
                     let
                         left =
                             (if start.y < end.y || start.y == end.y then
-                                toFloat start.x * Constants.characterWidth
+                                toFloat start.x * characterWidth
 
                              else
                                 0
@@ -800,7 +805,7 @@ renderSelection selection scrollLeft =
                                     "calc(100% - " ++ String.fromFloat left ++ "px)"
 
                                  else
-                                    (String.fromFloat <| toFloat (start.x + 1) * Constants.characterWidth) ++ "px"
+                                    (String.fromFloat <| toFloat (start.x + 1) * characterWidth) ++ "px"
                                 )
                              , Html.Attributes.style "height" (String.fromInt Constants.lineHeight ++ "px")
                              ]
@@ -840,7 +845,7 @@ renderSelection selection scrollLeft =
                                         0
 
                                      else
-                                        toFloat end.x * Constants.characterWidth
+                                        toFloat end.x * characterWidth
                                     )
                                         - toFloat scrollLeft
                                  )
@@ -849,7 +854,7 @@ renderSelection selection scrollLeft =
                              , Html.Attributes.style "top" (String.fromInt (end.y * Constants.lineHeight) ++ "px")
                              , Html.Attributes.style "width"
                                 (if start.y < end.y || start.y == end.y then
-                                    (String.fromFloat <| toFloat (end.x + 1) * Constants.characterWidth) ++ "px"
+                                    (String.fromFloat <| toFloat (end.x + 1) * characterWidth) ++ "px"
 
                                  else
                                     "100%"

@@ -1,0 +1,24 @@
+{
+  "name": "editor-test",
+  "version": "1.0.0",
+  "description": "Editor Test",
+  "dependencies": {},
+  "devDependencies": {
+    "elm-format": "^0.8.4",
+    "elm-live": "^4.0.2",
+    "elm": "^0.19.1-5"
+  },
+  "scripts": {
+    "start": "npx elm-live src/Main.elm --open --start-page=index.html -- --output=main.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loganhenson/editor.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/loganhenson/editor/issues"
+  },
+  "homepage": "https://github.com/loganhenson/editor#readme"
+}

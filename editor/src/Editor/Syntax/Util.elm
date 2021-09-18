@@ -1,5 +1,6 @@
 module Editor.Syntax.Util exposing (getCurrentToken, highlight, tokenize, viewLine)
 
+import Editor.Constants as Constants
 import Editor.Msg exposing (RenderableLine)
 import Editor.Syntax.SymbolKind exposing (kindToSymbolClass)
 import Editor.Syntax.Types exposing (..)

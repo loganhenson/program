@@ -22,6 +22,9 @@ port requestPaste : () -> Cmd msg
 port requestChange : String -> Cmd msg
 
 
+port requestCharacterWidth : () -> Cmd msg
+
+
 port requestActivateFile : String -> Cmd msg
 
 
@@ -30,6 +33,9 @@ port requestActivateFile : String -> Cmd msg
 
 
 port receiveChange : (String -> msg) -> Sub msg
+
+
+port receiveCharacterWidth : (String -> msg) -> Sub msg
 
 
 port receivePaste : (String -> msg) -> Sub msg
