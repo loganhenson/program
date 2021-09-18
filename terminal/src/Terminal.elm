@@ -74,7 +74,7 @@ makeEmptyBuffer size terminalPorts =
                 , padBottom = False
                 , padRight = False
                 , showCursor = True
-                , characterWidth = 8.40625
+                , characterWidth = 3
                 }
                 terminalPorts
     in
@@ -91,6 +91,72 @@ update msg model =
     case msg of
         NoOp ->
             ( model, Cmd.none )
+
+        ReceivedCharacterWidth characterWidth ->
+            let
+                terminal =
+                    model.terminal
+
+                scrollback =
+                    terminal.scrollback
+
+                scrollbackConfig =
+                    scrollback.config
+
+                nextScrollbackConfig =
+                    { scrollbackConfig | characterWidth = characterWidth }
+
+                primaryBuffer =
+                    terminal.primaryBuffer
+
+                primaryBufferEditor =
+                    primaryBuffer.editor
+
+                primaryBufferEditorConfig =
+                    primaryBufferEditor.config
+
+                nextPrimaryBufferEditorConfig =
+                    { primaryBufferEditorConfig | characterWidth = characterWidth }
+
+                alternateBuffer =
+                    terminal.alternateBuffer
+
+                alternateBufferEditor =
+                    alternateBuffer.editor
+
+                alternateBufferEditorConfig =
+                    alternateBufferEditor.config
+
+                nextAlternateBufferEditorConfig =
+                    { alternateBufferEditorConfig | characterWidth = characterWidth }
+
+                nextTerminal =
+                    { terminal
+                        | scrollback =
+                            { scrollback
+                                | config = nextScrollbackConfig
+                            }
+                        , primaryBuffer =
+                            { primaryBuffer
+                                | editor =
+                                    { primaryBufferEditor
+                                        | config = nextPrimaryBufferEditorConfig
+                                    }
+                            }
+                        , alternateBuffer =
+                            { alternateBuffer
+                                | editor =
+                                    { alternateBufferEditor
+                                        | config = nextAlternateBufferEditorConfig
+                                    }
+                            }
+                    }
+            in
+            ( { model
+                | terminal = nextTerminal
+              }
+            , Cmd.none
+            )
 
         ReceivedTerminalResized json ->
             case decodeValue decodeTerminalResized json of

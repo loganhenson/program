@@ -20,7 +20,7 @@ type alias Flags =
 init : Flags -> ( Model, Cmd Msg )
 init { directory } =
     ( { terminal = Terminal.init directory (editorPorts directory) (terminalPorts directory) }
-    , Ports.requestSetupTerminalResizeObserver ()
+    , Cmd.batch [ Ports.requestSetupTerminalResizeObserver (), Ports.requestCharacterWidth () ]
     )
 
 
@@ -43,6 +43,7 @@ subscriptions _ =
     Sub.batch
         [ Sub.map TerminalMsg <| Ports.receiveTerminalOutput Terminal.Types.ReceivedTerminalOutput
         , Sub.map TerminalMsg <| Ports.receiveTerminalResized Terminal.Types.ReceivedTerminalResized
+        , Sub.map TerminalMsg <| Ports.receiveCharacterWidth Terminal.Types.ReceivedCharacterWidth
         , Sub.map RawKeyboardMsg (RawKeyboard.subscriptions True True)
         ]
 

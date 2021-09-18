@@ -1,7 +1,7 @@
 module PortHandlers exposing (..)
 
-import Editor.Msg
 import Editor exposing (initialPorts)
+import Editor.Msg
 import Json.Encode
 import Ports
 import Terminal.Types
@@ -24,6 +24,9 @@ terminalPorts cwd =
 
 editorPorts : String -> Editor.Msg.Ports
 editorPorts cwd =
-    { initialPorts | requestPaste = Ports.requestPaste
-    , requestCopy = Ports.requestCopy
+    { initialPorts
+        | requestPaste = Ports.requestPaste
+        , requestCopy = Ports.requestCopy
+        , requestCharacterWidth = Ports.requestCharacterWidth
+        , receiveCharacterWidth = Ports.receiveCharacterWidth
     }

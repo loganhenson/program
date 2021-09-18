@@ -92,6 +92,12 @@ module.exports = {
       await writeText(window.getSelection().toString().replaceAll("\n", ""))
     })
 
+    window.vterm.ports.requestCharacterWidth.subscribe(() => {
+      window.vterm.ports.receiveCharacterWidth.send(
+          document.getElementById('character-width').getBoundingClientRect().width
+      )
+    })
+
     window.vterm.ports.requestQuit.subscribe(async () => {
       await exit()
     })

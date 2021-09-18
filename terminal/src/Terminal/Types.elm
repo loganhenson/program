@@ -58,5 +58,6 @@ type alias Model =
 type Msg
     = ReceivedTerminalOutput Json.Encode.Value
     | ReceivedTerminalResized Json.Encode.Value
+    | ReceivedCharacterWidth Float
     | TerminalEditorMsg Editor.Msg.Msg
     | NoOp

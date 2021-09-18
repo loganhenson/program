@@ -120,7 +120,6 @@
     })
 
     app.ports.requestCharacterWidth.subscribe(() => {
-        console.log('scrolling')
       app.ports.receiveCharacterWidth.send(
           document.getElementById('character-width').getBoundingClientRect().width
       )
