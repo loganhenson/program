@@ -1,5 +1,7 @@
 // import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
 
+// import {listen} from "@tauri-apps/api/event";
+
 export default {
   handlers: {
     onOpenFile: [],
@@ -152,7 +154,7 @@ export default {
   refreshDirectory(directory) {
     // ipcRenderer.send('message-to-directory-tree-worker', directory)
   },
-  initialize(state) {
+  initialize(state, listen, emit) {
     document.body.onkeydown = (event) => {
       if (event.target === document.body) {
         if ([
@@ -176,6 +178,10 @@ export default {
     // this.startPlugin('terminal')
 
     // Directory tree
+    listen('message-from-directory-tree-worker', event => {
+      console.log('message-from-directory-tree-worker', event)
+      window.vide.ports.receiveFileTree.send(event.payload);
+    })
     // ipcRenderer.on('message-from-directory-tree-worker', (event, message) => {
     //   window.vide.ports.receiveFileTree.send(
     //     JSON.parse(message)

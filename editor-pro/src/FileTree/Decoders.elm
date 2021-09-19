@@ -23,7 +23,7 @@ decodeFileOrDirectory =
     map3 FileOrDirectory
         (field "path" string)
         (field "name" string)
-        (field "type" decodeFileOrDirectoryType)
+        (field "type_" decodeFileOrDirectoryType)
 
 
 decodeFileOrDirectoryType : Decoder FileOrDirectoryType
@@ -32,14 +32,14 @@ decodeFileOrDirectoryType =
         |> andThen
             (\str ->
                 case str of
-                    "file" ->
+                    "File" ->
                         succeed FileOrDirectoryFile
 
-                    "directory" ->
+                    "Directory" ->
                         succeed FileOrDirectoryDirectory
 
                     _ ->
-                        fail "unknown type (allowed: 'file'|'directory')"
+                        fail "unknown type (allowed: 'File'|'Directory')"
             )
 
 
@@ -48,7 +48,7 @@ decodeFileTree =
     map4 FileTree
         (field "path" string)
         (field "name" string)
-        (field "type" decodeFileOrDirectoryType)
+        (field "type_" decodeFileOrDirectoryType)
         (maybe <|
             field "children"
                 (map Children

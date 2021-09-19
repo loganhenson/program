@@ -62,6 +62,17 @@
     ],
     "security": {
       "csp": "default-src blob: data: filesystem: ws: wss: http: https: tauri: 'unsafe-eval' 'unsafe-inline' 'self' img-src: 'self'"
+    },
+    "cli": {
+      "description": "Editor Pro Help",
+      "longDescription": "",
+      "beforeHelp": "",
+      "afterHelp": "",
+      "args": [{
+        "name": "directory",
+        "index": 1,
+        "takesValue": true
+      }]
     }
   }
 }
