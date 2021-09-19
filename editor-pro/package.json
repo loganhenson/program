@@ -1,0 +1,29 @@
+{
+ "scripts": {
+  "tauri": "tauri",
+  "build": "cd src-tauri; cargo tauri build",
+  "test": "cd src-tauri/src/terminal; cargo test",
+  "start": "cd src-tauri; cargo run",
+  "js": "esbuild js/main.js --bundle --outfile=built/js/main.js",
+  "js:watch": "chokidar 'js/**/*.js' -c 'npm run js'",
+  "elm": "elm make src/Main.elm --output built/elm.js",
+  "elm:watch": "chokidar 'src/**/*.elm' '../editor/src/**/*.elm' '../terminal/src/**/*.elm' -c 'npm run elm'",
+  "elm:optimize": "elm make src/Main.elm --optimize --output built/elm.js",
+  "css": "npx postcss css/main.css -o built/main.css",
+  "css:watch": "chokidar 'css/**/*.css' '../editor/css/**/*.css' -c 'npm run css'",
+  "watch": "concurrently \"npm:elm\" \"npm:css\" \"npm:js\" \"npm:elm:watch\" \"npm:css:watch\" \"npm:js:watch\" \"npm:start\" --kill-others-on-fail"
+ },
+ "devDependencies": {
+  "@tauri-apps/api": "^1.0.0-beta.8",
+  "autoprefixer": "^10.1.0",
+  "chokidar-cli": "^3.0.0",
+  "concurrently": "^6.2.1",
+  "elm": "^0.19.1-5",
+  "elm-test": "^0.19.1-revision7",
+  "esbuild": "^0.12.17",
+  "postcss": "^8.2.1",
+  "postcss-cli": "^8.3.1",
+  "postcss-import": "^14.0.2",
+  "tailwindcss": "^2.2.15"
+ }
+}

@@ -1,0 +1,84 @@
+*,
+*::before,
+*::after {
+    border-color: transparent;
+}
+
+body {
+    margin: 0;
+    background: #1e1e1e;
+    color: #d4d4d4;
+}
+
+/** How to override theme **/
+:root {
+    /*--font-size: 14px !important;*/
+    /*--line-height: 24px !important;*/
+    /*--text-color: #d4d4d4 !important;*/
+    --background-color: #262626 !important;
+    /*--cursor-color: rgba(255, 255, 255, 0.36) !important;*/
+    /*--selection-color: rgba(58, 119, 215, 0.36) !important;*/
+    /*--error-color: rgba(255, 0, 0, 0.6) !important;*/
+    /*--error-text-color: white !important;*/
+}
+
+/** Syntax Highlighting **/
+.syntax-variable {
+    color: rgb(152, 118, 170)
+}
+
+.syntax-string,
+.syntax-multiline-string {
+    color: rgb(43, 179, 103);
+}
+
+.syntax-import,
+.syntax-module-export,
+.syntax-case,
+.syntax-of,
+.syntax-if,
+.syntax-then,
+.syntax-else,
+.syntax-let,
+.syntax-in {
+    color: darkorange;
+}
+
+.syntax-function-def,
+.syntax-function-type-sig {
+    color: #f5ff66;
+}
+
+.syntax-module {
+    color: lightgreen;
+}
+
+.syntax-comment,
+.syntax-multiline-comment {
+    color: lightslategrey;
+}
+
+.syntax-parens,
+.syntax-equals,
+.syntax-comma,
+.syntax-open-brace,
+.syntax-close-brace,
+.syntax-open-bracket,
+.syntax-close-bracket,
+.syntax-pipe,
+.syntax-backslash,
+.syntax-number {
+    color: cornflowerblue;
+}
+
+.syntax-skinny-arrow,
+.syntax-left-compose,
+.syntax-right-compose,
+.syntax-forward-slash,
+.syntax-minus,
+.syntax-plus,
+.syntax-star,
+.syntax-double-colon,
+.syntax-percent {
+    color: indianred;
+}
