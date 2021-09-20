@@ -46,18 +46,6 @@ module.exports = {
   async initialize(state, listen, emit) {
     window.onkeydown = (event) => {
       event.preventDefault()
-      // if (event.target === document.body) {
-      //   if ([
-      //     'Space',
-      //     'Tab',
-      //     'ArrowRight',
-      //     'ArrowLeft',
-      //     'ArrowUp',
-      //     'ArrowDown',
-      //   ].includes(event.code)) {
-      //     event.preventDefault()
-      //   }
-      // }
     }
 
     // Required for plugins

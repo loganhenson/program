@@ -1,6 +1,17 @@
-// import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
+import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
 
 // import {listen} from "@tauri-apps/api/event";
+
+let _debounce = function(ms, fn) {
+  let timer;
+  return function() {
+    clearTimeout(timer);
+    let args = Array.prototype.slice.call(arguments);
+    args.unshift(this);
+    timer = setTimeout(fn.bind.apply(fn, args), ms);
+  };
+};
+
 
 export default {
   handlers: {
@@ -91,32 +102,33 @@ export default {
     //   resolve()
     // })
   },
-  async startPlugin(pluginName) {
-      console.log('startPlugin called', pluginName)
-    // if (pluginName && !this.plugins[pluginName]) {
-    //   let plugin = await getPlugin(pluginName)
-    //
-    //   try {
-    //     await plugin.default.initialize(this)
-    //     this.plugins[pluginName] = true
-    //
-    //     console.log(`${pluginName} plugin initialized`)
-    //   } catch (e) {
-    //     this.receiveNotification({
-    //       source: `${pluginName} (Plugin)`,
-    //       type: 'error',
-    //       message: 'Failed To Initialize. ' + e.message,
-    //     })
-    //
-    //     console.log(`${pluginName} plugin failed to initialized`)
-    //   }
-    // }
+  async startPlugin(pluginName, listen, emit) {
+    console.log('startPlugin called', pluginName)
+    if (pluginName && !this.plugins[pluginName]) {
+      let plugin = await getPlugin(pluginName)
+
+      try {
+        await plugin.default.initialize(this, listen, emit)
+        this.plugins[pluginName] = true
+
+        console.log(`${pluginName} plugin initialized`)
+      } catch (e) {
+        this.receiveNotification({
+          source: `${pluginName} (Plugin)`,
+          type: 'error',
+          message: 'Failed To Initialize. ' + e.message,
+        })
+
+        console.log(`${pluginName} plugin failed to initialized`)
+      }
+    }
   },
   async checkFilePlugins(filePath) {
-    // const pluginName = getPluginNameFromFilePath(filePath)
-    // await this.startPlugin(pluginName)
+    const pluginName = getPluginNameFromFilePath(filePath)
+    await this.startPlugin(pluginName)
   },
   async activateFileOrDirectory(path) {
+      console.log('activateFileOrDirectory', path)
     // const stat = await fs.lstat(path)
     //
     // if (stat.isFile()) {
@@ -137,9 +149,11 @@ export default {
     // }
   },
   async createFile(file) {
+    console.log('createFile', file)
     // await fs.writeFile(file, '', 'utf8')
   },
   async createDirectory(directory) {
+    console.log('createDirectory', directory)
     // await fs.mkdir(directory)
   },
   sendVideError(error) {
@@ -155,19 +169,8 @@ export default {
     // ipcRenderer.send('message-to-directory-tree-worker', directory)
   },
   initialize(state, listen, emit) {
-    document.body.onkeydown = (event) => {
-      if (event.target === document.body) {
-        if ([
-          'Space',
-          'Tab',
-          'ArrowRight',
-          'ArrowLeft',
-          'ArrowUp',
-          'ArrowDown',
-        ].includes(event.code)) {
-          event.preventDefault()
-        }
-      }
+    window.onkeydown = (event) => {
+      event.preventDefault()
     }
 
     // Required for plugins
@@ -175,24 +178,19 @@ export default {
 
     // Start vide base functionality plugins (terminal, etc.)
     // Language specific plugins are lazily loaded upon opening a file of that type
-    // this.startPlugin('terminal')
+    this.startPlugin('terminal', listen, emit)
 
     // Directory tree
     listen('message-from-directory-tree-worker', event => {
       console.log('message-from-directory-tree-worker', event)
       window.vide.ports.receiveFileTree.send(event.payload);
     })
-    // ipcRenderer.on('message-from-directory-tree-worker', (event, message) => {
-    //   window.vide.ports.receiveFileTree.send(
-    //     JSON.parse(message)
-    //   )
-    // })
+
 
     /**
      * Elm initialization
      */
     if (state.directory) {
-      // ipcRenderer.send('message-to-directory-tree-worker', state.directory)
         emit('initialized', state.directory)
     }
     window.vide = Elm.Main.init({
@@ -256,25 +254,35 @@ export default {
     })
 
     window.vide.ports.requestSetupTerminalResizeObserver.subscribe(() => {
-      const terminalResizeObserver = new ResizeObserver(terminals => {
+      let prevWidthIncrement = 0;
+      let prevHeightIncrement = 0;
+      const terminalResizeObserver = new ResizeObserver(_debounce(50, terminals => {
         if (terminals[0].contentRect.height <= 0 && terminals[0].contentRect.width <= 0) {
           return
         }
 
-        this.handlers.requestResizeTerminal({
-          height: terminals[0].contentRect.height,
-          width: terminals[0].contentRect.width
-        })
-      })
+        let w = Math.floor(terminals[0].contentRect.width / 8.4)
+        let h = Math.floor(terminals[0].contentRect.height / 24)
+        let nextWidthIncrement = Math.floor(w * 8.4);
+        let nextHeightIncrement = Math.floor(h * 24);
 
-      let interval
-      const bindObserver = () => {
+        if (nextWidthIncrement !== prevWidthIncrement || nextHeightIncrement !== prevHeightIncrement) {
+          console.log(w, h)
+          prevWidthIncrement = nextWidthIncrement
+          prevHeightIncrement = nextHeightIncrement
+          this.handlers.requestResizeTerminal({
+            width: w,
+            height: h,
+          })
+        }
+      }))
+
+      let interval = setInterval(() => {
         if (document.querySelector('#terminal')) {
           terminalResizeObserver.observe(document.querySelector('#terminal'))
           clearInterval(interval)
         }
-      }
-      interval = setInterval(bindObserver, 100)
+      }, 200)
     })
 
     window.vide.ports.requestRun.subscribe(async ({ contents }) => {
