@@ -1,56 +1,21 @@
+use filetree::FileTreeAndFlat;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::{self};
 use std::{
-  fs,
+  env, fs,
   io::Read,
-  path::PathBuf,
   str::from_utf8,
   sync::mpsc::{self, Receiver, Sender},
   thread,
-  thread::sleep,
-  time::Duration,
 };
-use tauri::{api::cli::get_matches, Manager, Menu};
+use tauri::{Menu};
 use terminal::{parse, TerminalCommand};
 
 #[derive(Deserialize, Serialize, Clone, Eq, PartialEq, Debug)]
 struct Size {
   height: i32,
   width: i32,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct File {
-  path: String,
-  contents: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct FileOrDirectory {
-  path: String,
-  name: String,
-  type_: FileOrDirectoryType,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct FileTreeAndFlat {
-  tree: FileTree,
-  flat: Vec<FileOrDirectory>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum FileOrDirectoryType {
-  File,
-  Directory,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct FileTree {
-  path: String,
-  name: String,
-  type_: FileOrDirectoryType,
-  children: Option<Vec<FileTree>>
 }
 
 #[tokio::main]
@@ -64,97 +29,52 @@ async fn main() {
       let window2_ = window.clone();
       let window_directory_tree_worker = window.clone();
 
-      // Set directory
-      let cli_config = window.config().tauri.cli.clone().unwrap();
-      match get_matches(&cli_config) {
-        // `matches` here is a Struct with { args, subcommand }.
-        // `args` is `HashMap<String, ArgData>` where `ArgData` is a struct with { value, occurances }.
-        // `subcommand` is `Option<Box<SubcommandMatches>>` where `SubcommandMatches` is a struct with { name, matches }.
-        Ok(matches) => {
-          println!("MATCHES: {:?}", matches);
-          let directory = fs::canonicalize(PathBuf::from("../testing-codebase"));
-          match directory {
-            Ok(dir) => {
-              println!("directory: {:?}", dir);
-              window_.emit("initialize", dir).expect("failed to emit")
-            }
-            Err(_error) => {}
+      // Start file tree worker
+      let (filetree_tx, filetree_rx): (Sender<FileTreeAndFlat>, Receiver<FileTreeAndFlat>) =
+        mpsc::channel();
+      let (filetree_dir_tx, filetree_dir_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+      filetree::start(filetree_dir_rx, filetree_tx);
+      tokio::spawn(async move {
+        for tree in filetree_rx {
+          window_directory_tree_worker
+            .emit("message-from-directory-tree-worker", tree)
+            .expect("failed to emit");
+        }
+      });
+      window.listen("initialized", move |event| {
+        match filetree_dir_tx.send(event.payload().unwrap().to_string()) {
+          _ => {
+            ();
           }
         }
-        Err(_) => {}
-      };
-
-      // end set directory
-
-      // Directory Tree worker
-      thread::spawn(move || {
-        let tree = FileTreeAndFlat {
-          tree: FileTree {
-            path: "/Users/loganhenson/program/editor-pro/testing-codebase".to_string(),
-            name: "testing-codebase".to_string(),
-            type_: FileOrDirectoryType::Directory,
-            children: Option::Some(vec![
-              FileTree {
-                path: "/Users/loganhenson/program/editor-pro/testing-codebase/directory".to_string(),
-                name: "directory".to_string(),
-                type_: FileOrDirectoryType::Directory,
-                children: Option::Some(vec![FileTree {
-                  path: "/Users/loganhenson/program/editor-pro/testing-codebase/directory/file".to_string(),
-                  name: "file".to_string(),
-                  type_: FileOrDirectoryType::File,
-                  children: None,
-                }]),
-              },
-              FileTree {
-                path: "/Users/loganhenson/program/editor-pro/testing-codebase/file".to_string(),
-                name: "file".to_string(),
-                type_: FileOrDirectoryType::File,
-                children: None
-              },
-            ]),
-          },
-          flat: vec![
-            FileOrDirectory {
-              path: "/Users/loganhenson/program/editor-pro/testing-codebase".to_string(),
-              name: "testing-codebase".to_string(),
-              type_: FileOrDirectoryType::Directory,
-            },
-            FileOrDirectory {
-              path: "/Users/loganhenson/program/editor-pro/testing-codebase/directory".to_string(),
-              name: "directory".to_string(),
-              type_: FileOrDirectoryType::Directory,
-            },
-            FileOrDirectory {
-              path: "/Users/loganhenson/program/editor-pro/testing-codebase/directory/file".to_string(),
-              name: "file".to_string(),
-              type_: FileOrDirectoryType::File,
-            },
-            FileOrDirectory {
-              path: "/Users/loganhenson/program/editor-pro/testing-codebase/file".to_string(),
-              name: "file".to_string(),
-              type_: FileOrDirectoryType::File,
-            },
-          ],
-        };
-
-        println!("SENDING TREE: {:?}", tree);
-
-        sleep(Duration::from_secs(1));
-        window_directory_tree_worker
-          .emit("message-from-directory-tree-worker", tree)
-          .expect("failed to emit");
-
-        //     window2_
-        //       .emit(
-        //         "sendResizedToTerminal",
-        //         Size {
-        //           height: rows,
-        //           width: cols,
-        //         },
-        //       )
-        //       .expect("failed to emit");
-        //   }
       });
+
+      // Set directory & initialize app (with directory positional argument if exists)
+      match env::args().skip(1).next() {
+        Some(directory) => {
+          println!("directory: {:?}", directory);
+
+          window_
+            .emit("initialize", directory.clone())
+            .expect("failed to emit");
+        }
+        None => {
+          let dir = match env::var("DEV_DIRECTORY") {
+            Ok(dir) => {
+              println!("dev mode, using {:?}", dir);
+              dir
+            }
+            Err(_) => {
+              println!("using current working directory");
+              fs::canonicalize(env::current_dir().unwrap()).unwrap().into_os_string().into_string().unwrap()
+            }
+          };
+
+          window_
+            .emit("initialize", dir.clone())
+            .expect("failed to emit")
+        }
+      };
 
       let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
       let tx1 = tx.clone();

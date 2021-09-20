@@ -193,6 +193,7 @@ export default {
      */
     if (state.directory) {
       // ipcRenderer.send('message-to-directory-tree-worker', state.directory)
+        emit('initialized', state.directory)
     }
     window.vide = Elm.Main.init({
       flags: {

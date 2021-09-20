@@ -1,6 +1,6 @@
 {
   "package": {
-    "productName": "vterm",
+    "productName": "Terminal Pro",
     "version": "0.1.0"
   },
   "build": {
@@ -53,7 +53,7 @@
     },
     "windows": [
       {
-        "title": "VTerm",
+        "title": "Terminal Pro",
         "width": 800,
         "height": 600,
         "resizable": true,
@@ -62,17 +62,6 @@
     ],
     "security": {
       "csp": "default-src blob: data: filesystem: ws: wss: http: https: tauri: 'unsafe-eval' 'unsafe-inline' 'self' img-src: 'self'"
-    },
-    "cli": {
-      "description": "Editor Pro Help",
-      "longDescription": "",
-      "beforeHelp": "",
-      "afterHelp": "",
-      "args": [{
-        "name": "directory",
-        "index": 1,
-        "takesValue": true
-      }]
     }
   }
 }
