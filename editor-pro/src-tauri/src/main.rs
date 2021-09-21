@@ -1,7 +1,8 @@
-use filetree::FileTreeAndFlat;
+use filetree::filetree::FileTreeAndFlat;
 use serde_json::{self};
 use std::{
   env, fs,
+  path::PathBuf,
   sync::mpsc::{self, Receiver, Sender},
 };
 use tauri::Menu;
@@ -55,7 +56,7 @@ async fn main() {
       let (filetree_tx, filetree_rx): (Sender<FileTreeAndFlat>, Receiver<FileTreeAndFlat>) =
         mpsc::channel();
       let (filetree_dir_tx, filetree_dir_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
-      filetree::start(filetree_dir_rx, filetree_tx);
+      filetree::filetree::start(filetree_dir_rx, filetree_tx);
       tokio::spawn(async move {
         for tree in filetree_rx {
           window_directory_tree_worker
@@ -84,7 +85,11 @@ async fn main() {
           let dir = match env::var("DEV_DIRECTORY") {
             Ok(dir) => {
               println!("dev mode, using {:?}", dir);
-              dir
+              fs::canonicalize(PathBuf::from(dir))
+                .unwrap()
+                .into_os_string()
+                .into_string()
+                .unwrap()
             }
             Err(_) => {
               println!("using current working directory");
