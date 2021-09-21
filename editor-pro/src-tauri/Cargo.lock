@@ -35,7 +35,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "filetree",
- "portable-pty",
  "serde",
  "serde_json",
  "tauri",
@@ -3160,9 +3159,11 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "lazy_static",
+ "portable-pty",
  "regex",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

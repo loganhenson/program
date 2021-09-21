@@ -2,7 +2,7 @@
  "scripts": {
   "tauri": "tauri",
   "build": "cd src-tauri; cargo tauri build",
-  "test": "cd src-tauri/src/terminal; cargo test",
+  "test": "cd ../terminal-server; cargo test",
   "start": "cd src-tauri; cargo run",
   "js": "esbuild js/main.js --bundle --outfile=built/js/main.js",
   "js:watch": "chokidar 'js/**/*.js' -c 'npm run js'",

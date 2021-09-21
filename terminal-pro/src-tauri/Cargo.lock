@@ -3148,9 +3148,11 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "lazy_static",
+ "portable-pty",
  "regex",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

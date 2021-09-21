@@ -1,4 +1,4 @@
-use terminal::{parse, TerminalCommand};
+use terminal::parse::{parse, TerminalCommand};
 
 #[test]
 fn it_can_parse_move_cursor_to_top_left_corner() {
