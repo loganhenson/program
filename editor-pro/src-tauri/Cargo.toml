@@ -1,11 +1,11 @@
 [package]
-name = "app"
+name = "editor-pro"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Editor Pro"
+authors = ["Logan Henson"]
 license = ""
 repository = ""
-default-run = "app"
+default-run = "editor-pro"
 edition = "2018"
 build = "src/build.rs"
 
@@ -19,7 +19,7 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "1.0.0-beta.7", features = ["api-all"] }
 anyhow = { version = "1.0" }
-tokio = { version = "1.9.0", features = ["full"] }
+tokio = { version = "1.11.0", features = ["rt", "rt-multi-thread", "macros"] }
 terminal = { path = "../../terminal-server" }
 filetree = { path = "./src/filetree" }
 

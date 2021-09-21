@@ -1,6 +1,6 @@
 {
   "package": {
-    "productName": "Terminal Pro",
+    "productName": "Editor Pro",
     "version": "0.1.0"
   },
   "build": {
@@ -53,7 +53,7 @@
     },
     "windows": [
       {
-        "title": "Terminal Pro",
+        "title": "Editor Pro",
         "width": 800,
         "height": 600,
         "resizable": true,
