@@ -19,7 +19,7 @@ pub struct Api {
   pub resize_tx: std::sync::mpsc::Sender<Size>,
 }
 
-pub fn start(output_sender: Sender<Vec<TerminalCommand>>, resize_sender: Sender<Size>) -> Api {
+pub fn start(directory: String, output_sender: Sender<Vec<TerminalCommand>>, resize_sender: Sender<Size>) -> Api {
   let (run_tx, run_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
   let (resize_tx, resize_rx): (Sender<Size>, Receiver<Size>) = mpsc::channel();
 
@@ -47,7 +47,8 @@ pub fn start(output_sender: Sender<Vec<TerminalCommand>>, resize_sender: Sender<
 
   // Spawn a shell into the pty
   std::env::set_var("TERM", "xterm-256color");
-  let cmd = CommandBuilder::new_default_prog();
+  let mut cmd = CommandBuilder::new_default_prog();
+  cmd.cwd(directory);
   let _child = pair.slave.spawn_command(cmd).unwrap();
 
   // Read and parse output from the pty with reader

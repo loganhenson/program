@@ -5,7 +5,7 @@ use std::{
   path::PathBuf,
   sync::mpsc::{self, Receiver, Sender},
 };
-use tauri::Menu;
+use tauri::{Menu, Window, Wry};
 use terminal::{parse::TerminalCommand, terminal::Size};
 use std::fs::metadata;
 
@@ -17,42 +17,11 @@ async fn main() {
     .menu(Menu::new())
     .on_page_load(|window, _| {
       let window_ = window.clone();
-      let window_terminal_output = window.clone();
-      let window_terminal_resize = window.clone();
+      let window_terminal = window.clone();
       let window_directory_tree_worker = window.clone();
       let window_receive_activated_file = window.clone();
 
-      let (terminal_output_tx, terminal_output_rx): (
-        Sender<Vec<TerminalCommand>>,
-        Receiver<Vec<TerminalCommand>>,
-      ) = mpsc::channel();
-      let (terminal_resize_tx, terminal_resize_rx): (Sender<Size>, Receiver<Size>) =
-        mpsc::channel();
 
-      let terminal_api = terminal::terminal::start(terminal_output_tx, terminal_resize_tx);
-      let terminal_api_run_tx = terminal_api.run_tx.clone();
-      let terminal_api_resize_tx = terminal_api.resize_tx.clone();
-      window.listen("run", move |event| {
-        terminal_api_run_tx
-          .send(event.payload().unwrap().to_string())
-          .unwrap()
-      });
-      window.listen("resize", move |event| {
-        terminal_api_resize_tx
-          .send(serde_json::from_str(event.payload().unwrap()).unwrap())
-          .unwrap()
-      });
-
-      tokio::spawn(async move {
-        for message in terminal_resize_rx {
-          window_terminal_resize.emit("sendResizedToTerminal", message).unwrap();
-        }
-      });
-      tokio::spawn(async move {
-        for message in terminal_output_rx {
-          window_terminal_output.emit("output", message).unwrap();
-        }
-      });
 
       // Start file tree worker
       let (filetree_tx, filetree_rx): (Sender<FileTreeAndFlat>, Receiver<FileTreeAndFlat>) =
@@ -66,35 +35,14 @@ async fn main() {
             .expect("failed to emit");
         }
       });
+
+      // Tell file tree worker that the app has initialized
       window.listen("initialized", move |event| {
-        match filetree_dir_tx.send(event.payload().unwrap().to_string()) {
-          _ => {
-            ();
-          }
-        }
+        filetree_dir_tx.send(event.payload().unwrap().to_string()).unwrap()
       });
 
       // Listen for "activateFileOrDirectory" event
       window.listen("activateFileOrDirectory", move |event| {
-        // const stat = await fs.lstat(path)
-        //
-        // if (stat.isFile()) {
-        //   await this.checkFilePlugins(path)
-        //
-        //   const contents = await fs.readFile(path, 'utf8')
-        //
-        //   window.vide.ports.receiveActivatedFile.send({
-        //     path,
-        //     contents,
-        //   })
-        //
-        //   this.data.activeFile = path
-        //
-        //   this.runOpenFileHandlers(path, contents)
-        // } else if (stat.isDirectory()) {
-        //   window.vide.ports.receiveActivatedDirectory.send(path)
-        // }
-
         let filename = event.payload().unwrap();
         if metadata(filename).unwrap().is_file() {
           let contents = fs::read_to_string(filename)
@@ -105,9 +53,8 @@ async fn main() {
               path: filename.to_string(),
               contents,
             })
-            .expect("failed to emit")
+            .expect("failed to emit receiveActivatedFile")
         }
-
       });
 
       // Set directory & initialize app (with directory positional argument if exists)
@@ -139,6 +86,9 @@ async fn main() {
             }
           };
 
+          // Start the terminal in the working directory
+          start_terminal(window_terminal, dir.clone());
+
           window_
             .emit("initialize", dir.clone())
             .expect("failed to emit")
@@ -147,4 +97,41 @@ async fn main() {
     })
     .run(context)
     .expect("failed to run app");
+}
+
+fn start_terminal(window: Window<Wry>, directory: String) {
+  let window_terminal_output = window.clone();
+  let window_terminal_resize = window.clone();
+
+  let (terminal_output_tx, terminal_output_rx): (
+    Sender<Vec<TerminalCommand>>,
+    Receiver<Vec<TerminalCommand>>,
+  ) = mpsc::channel();
+  let (terminal_resize_tx, terminal_resize_rx): (Sender<Size>, Receiver<Size>) =
+    mpsc::channel();
+
+  let terminal_api = terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx);
+  let terminal_api_run_tx = terminal_api.run_tx.clone();
+  let terminal_api_resize_tx = terminal_api.resize_tx.clone();
+  window.listen("run", move |event| {
+    terminal_api_run_tx
+      .send(event.payload().unwrap().to_string())
+      .unwrap()
+  });
+  window.listen("resize", move |event| {
+    terminal_api_resize_tx
+      .send(serde_json::from_str(event.payload().unwrap()).unwrap())
+      .unwrap()
+  });
+
+  tokio::spawn(async move {
+    for message in terminal_resize_rx {
+      window_terminal_resize.emit("sendResizedToTerminal", message).unwrap();
+    }
+  });
+  tokio::spawn(async move {
+    for message in terminal_output_rx {
+      window_terminal_output.emit("output", message).unwrap();
+    }
+  });
 }

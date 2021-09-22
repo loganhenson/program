@@ -20,7 +20,7 @@ async fn main() {
       let (terminal_resize_tx, terminal_resize_rx): (Sender<Size>, Receiver<Size>) =
         mpsc::channel();
 
-      let terminal_api = terminal::terminal::start(terminal_output_tx, terminal_resize_tx);
+      let terminal_api = terminal::terminal::start("~".to_string(), terminal_output_tx, terminal_resize_tx);
       let terminal_api_run_tx = terminal_api.run_tx.clone();
       let terminal_api_resize_tx = terminal_api.resize_tx.clone();
       window.listen("run", move |event| {
