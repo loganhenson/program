@@ -127,26 +127,8 @@ export default {
     const pluginName = getPluginNameFromFilePath(filePath)
     await this.startPlugin(pluginName)
   },
-  async activateFileOrDirectory(path) {
-      console.log('activateFileOrDirectory', path)
-    // const stat = await fs.lstat(path)
-    //
-    // if (stat.isFile()) {
-    //   await this.checkFilePlugins(path)
-    //
-    //   const contents = await fs.readFile(path, 'utf8')
-    //
-    //   window.vide.ports.receiveActivatedFile.send({
-    //     path,
-    //     contents,
-    //   })
-    //
-    //   this.data.activeFile = path
-    //
-    //   this.runOpenFileHandlers(path, contents)
-    // } else if (stat.isDirectory()) {
-    //   window.vide.ports.receiveActivatedDirectory.send(path)
-    // }
+  async activateFileOrDirectory(emit, path) {
+    emit('activateFileOrDirectory', path)
   },
   async createFile(file) {
     console.log('createFile', file)
@@ -184,6 +166,16 @@ export default {
     listen('message-from-directory-tree-worker', event => {
       console.log('message-from-directory-tree-worker', event)
       window.vide.ports.receiveFileTree.send(event.payload);
+    })
+
+    //
+    listen('receiveActivatedFile', (event) => {
+        console.log('receiveActivatedFile', event.payload)
+        window.vide.ports.receiveActivatedFile.send(event.payload)
+
+        this.data.activeFile = event.payload.path
+
+        // this.runOpenFileHandlers(event.payload.path, event.payload.contents)
     })
 
 
@@ -240,7 +232,7 @@ export default {
     })
 
     window.vide.ports.requestActivateFileOrDirectory.subscribe((fileOrDirectory) => {
-      this.activateFileOrDirectory(fileOrDirectory)
+      this.activateFileOrDirectory(emit, fileOrDirectory)
     })
 
     window.vide.ports.requestRunTerminal.subscribe(({ contents }) => {
@@ -319,7 +311,7 @@ export default {
       try {
         await this.createFile(file)
         await this.refreshDirectory(state.directory)
-        await this.activateFileOrDirectory(file)
+        await this.activateFileOrDirectory(emit, file)
       } catch (e) {
         if (e.code === 'EISDIR') {
           this.sendVideError({
@@ -334,7 +326,7 @@ export default {
       try {
         await this.createDirectory(directory)
         await this.refreshDirectory(state.directory)
-        await this.activateFileOrDirectory(directory)
+        await this.activateFileOrDirectory(emit, directory)
       } catch (e) {
         if (e.code === 'EEXIST' || e.code === 'EISDIR') {
           this.sendVideError({

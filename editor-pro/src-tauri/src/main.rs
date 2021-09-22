@@ -1,4 +1,4 @@
-use filetree::filetree::FileTreeAndFlat;
+use filetree::filetree::{FileTreeAndFlat, File};
 use serde_json::{self};
 use std::{
   env, fs,
@@ -7,6 +7,7 @@ use std::{
 };
 use tauri::Menu;
 use terminal::{parse::TerminalCommand, terminal::Size};
+use std::fs::metadata;
 
 #[tokio::main]
 async fn main() {
@@ -19,6 +20,7 @@ async fn main() {
       let window_terminal_output = window.clone();
       let window_terminal_resize = window.clone();
       let window_directory_tree_worker = window.clone();
+      let window_receive_activated_file = window.clone();
 
       let (terminal_output_tx, terminal_output_rx): (
         Sender<Vec<TerminalCommand>>,
@@ -70,6 +72,42 @@ async fn main() {
             ();
           }
         }
+      });
+
+      // Listen for "activateFileOrDirectory" event
+      window.listen("activateFileOrDirectory", move |event| {
+        // const stat = await fs.lstat(path)
+        //
+        // if (stat.isFile()) {
+        //   await this.checkFilePlugins(path)
+        //
+        //   const contents = await fs.readFile(path, 'utf8')
+        //
+        //   window.vide.ports.receiveActivatedFile.send({
+        //     path,
+        //     contents,
+        //   })
+        //
+        //   this.data.activeFile = path
+        //
+        //   this.runOpenFileHandlers(path, contents)
+        // } else if (stat.isDirectory()) {
+        //   window.vide.ports.receiveActivatedDirectory.send(path)
+        // }
+
+        let filename = event.payload().unwrap();
+        if metadata(filename).unwrap().is_file() {
+          let contents = fs::read_to_string(filename)
+            .expect("Something went wrong reading the file");
+
+          window_receive_activated_file
+            .emit("receiveActivatedFile", File {
+              path: filename.to_string(),
+              contents,
+            })
+            .expect("failed to emit")
+        }
+
       });
 
       // Set directory & initialize app (with directory positional argument if exists)

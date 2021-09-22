@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize, Debug)]
-struct File {
-  path: String,
-  contents: String,
+pub struct File {
+  pub path: String,
+  pub contents: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
