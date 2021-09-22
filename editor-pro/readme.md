@@ -49,4 +49,9 @@ cd src-tauri
 cargo tauri build
 ```
 
+## How to run it from cli on OSX
+```console
+./cli.sh $path
+```
+
 > Note: Linux will put the `.deb` file in `./target/release/bundle/deb/..`
