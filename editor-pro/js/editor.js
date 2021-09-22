@@ -151,10 +151,6 @@ export default {
     // ipcRenderer.send('message-to-directory-tree-worker', directory)
   },
   initialize(state, listen, emit) {
-    window.onkeydown = (event) => {
-      event.preventDefault()
-    }
-
     // Required for plugins
     this.data.state = state
 
