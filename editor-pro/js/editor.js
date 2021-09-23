@@ -157,13 +157,11 @@ export default {
       if (document.activeElement.tagName !== 'INPUT') {
         event.preventDefault();
       }
-      console.log(document.activeElement.tagName)
     };
     window.onkeydown = event => {
       if (document.activeElement.tagName !== 'INPUT') {
         event.preventDefault();
       }
-      console.log(document.activeElement.tagName)
     };
 
     // Required for plugins
@@ -175,18 +173,20 @@ export default {
 
     // Directory tree
     listen('message-from-directory-tree-worker', event => {
-      console.log('message-from-directory-tree-worker', event)
       window.vide.ports.receiveFileTree.send(event.payload);
     })
 
     //
     listen('receiveActivatedFile', (event) => {
-        console.log('receiveActivatedFile', event.payload)
         window.vide.ports.receiveActivatedFile.send(event.payload)
 
         this.data.activeFile = event.payload.path
 
         // this.runOpenFileHandlers(event.payload.path, event.payload.contents)
+    })
+
+    listen('receiveFuzzyFindResults', (event) => {
+      window.vide.ports.receiveFuzzyFindResults.send(event.payload)
     })
 
 
@@ -219,7 +219,10 @@ export default {
     })
 
     window.vide.ports.requestFuzzyFindInProjectFileOrDirectory.subscribe(async (fileOrDirectoryName) => {
-      emit('requestFuzzyFindProjects', fileOrDirectoryName)
+      emit('requestFuzzyFindInProjectFileOrDirectory', JSON.stringify({
+        directory: state.directory,
+        file_or_directory_name: fileOrDirectoryName,
+      }))
       // if (!this.data.fuzzyFinder) {
       //   const fuzzyFinder = await import('./features/fuzzyFinder.js')
       //   this.data.fuzzyFinder = fuzzyFinder.default

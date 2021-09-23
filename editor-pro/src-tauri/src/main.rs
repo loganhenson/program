@@ -1,5 +1,5 @@
 use filetree::filetree::{FileTreeAndFlat, File};
-use serde_json::{self};
+use serde_json::{self, Value};
 use std::{
   env, fs,
   path::PathBuf,
@@ -8,6 +8,7 @@ use std::{
 use tauri::{Menu, Window, Wry, MenuItem, Submenu};
 use terminal::{parse::TerminalCommand, terminal::Size};
 use std::fs::metadata;
+use std::process::Command;
 
 #[tokio::main]
 async fn main() {
@@ -33,6 +34,7 @@ async fn main() {
       let window_terminal = window.clone();
       let window_directory_tree_worker = window.clone();
       let window_receive_activated_file = window.clone();
+      let window_receive_fuzzy_find_results = window.clone();
 
 
       // Start file tree worker
@@ -53,9 +55,17 @@ async fn main() {
         filetree_dir_tx.send(event.payload().unwrap().to_string()).unwrap()
       });
 
-      // Listen for "requestFuzzyFindProjects" event
-      window.listen("requestFuzzyFindProjects", move |event| {
-        println!("{:?}", event.payload())
+      // Listen for "requestFuzzyFindInProjectFileOrDirectory" event
+      window.listen("requestFuzzyFindInProjectFileOrDirectory", move |event| {
+        let v: Value = serde_json::from_str(event.payload().unwrap()).unwrap();
+
+        window_receive_fuzzy_find_results
+          .emit("receiveFuzzyFindResults",
+             find_in_project_file_or_directory(
+               v["directory"].as_str().unwrap(),
+               v["file_or_directory_name"].as_str().unwrap()
+             ))
+          .expect("failed to emit receiveActivatedFile")
       });
 
       // Listen for "activateFileOrDirectory" event
@@ -151,4 +161,21 @@ fn start_terminal(window: Window<Wry>, directory: String) {
       window_terminal_output.emit("output", message).unwrap();
     }
   });
+}
+
+fn find_in_project_file_or_directory(directory: &str, file_or_directory_name: &str) -> Vec<String> {
+  let args = [
+    "*".to_owned() + file_or_directory_name + "*",
+    directory.to_string(),
+    "--hidden".to_string(),
+    "--glob".to_string(),
+    "--exclude=.git".to_string()
+  ];
+
+  let output = Command::new("fd")
+    .args(args)
+    .output()
+    .expect("failed to execute fd");
+
+  String::from_utf8_lossy(&output.stdout).lines().map(|s| s.to_string()).collect()
 }

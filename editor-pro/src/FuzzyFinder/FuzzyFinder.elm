@@ -2,7 +2,7 @@ module FuzzyFinder.FuzzyFinder exposing (..)
 
 import FuzzyFinder.Model exposing (Model)
 import Html exposing (Html, div, text)
-import Html.Attributes exposing (class, classList, id)
+import Html.Attributes exposing (class, classList, id, spellcheck)
 import Html.Events exposing (onClick, onInput)
 import Layout exposing (viewDialog)
 import Msg exposing (Msg(..))
@@ -24,6 +24,7 @@ view model projectPath =
         [ Html.input
             [ class "w-full p-2 text-gray-900 outline-none"
             , id "vide-fuzzy-finder-input"
+            , spellcheck False
             , onInput
                 (case projectPath of
                     Just _ ->

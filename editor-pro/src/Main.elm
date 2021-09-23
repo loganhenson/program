@@ -188,7 +188,7 @@ update msg model =
             ( nextModel, Ports.requestFuzzyFindProjects string )
 
         ReceivedFuzzyFindResults results ->
-            ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFindResults = List.filter (\result -> String.length result > 0) results } }, Cmd.none )
+            ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFindResults = results } }, Cmd.none )
 
         FocusEditor ->
             ( { nextModel
