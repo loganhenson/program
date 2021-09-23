@@ -381,7 +381,7 @@ viewFuzzyFinder model =
 
 view : Model -> Html.Html Msg
 view model =
-    div [ class "flex flex-col w-full h-full select-none outline-none overflow-hidden" ]
+    div [ class "flex flex-col w-full h-full outline-none overflow-hidden" ]
         [ div
             [ class "w-full flex"
             , case model.terminalShowing of
@@ -395,6 +395,7 @@ view model =
                 True ->
                     div
                         [ style "width" "20%"
+                        , class "select-none"
                         ]
                         [ viewFileTree model ]
 
@@ -407,6 +408,7 @@ view model =
 
                     False ->
                         style "width" "100%"
+                , class "select-none"
                 ]
                 [ viewEditor model ]
             ]

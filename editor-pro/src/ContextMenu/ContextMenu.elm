@@ -30,7 +30,7 @@ getSelectedMsg model =
 onContextMenu : (ContextMenu msg -> msg) -> (Int -> List (ContextMenuOptionView msg)) -> Html.Attribute msg
 onContextMenu showContextMenuMsg contextMenuView =
     custom "contextmenu" <|
-        Json.Decode.map (\message -> { message = message, preventDefault = False, stopPropagation = True }) <|
+        Json.Decode.map (\message -> { message = message, preventDefault = True, stopPropagation = True }) <|
             Json.Decode.map
                 (\clickLocation -> showContextMenuMsg (ContextMenu contextMenuView clickLocation 0))
                 decodeClickLocation

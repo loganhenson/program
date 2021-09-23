@@ -1,4 +1,5 @@
 import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
+import {readText, writeText} from "@tauri-apps/api/clipboard";
 
 // import {listen} from "@tauri-apps/api/event";
 
@@ -151,6 +152,20 @@ export default {
     // ipcRenderer.send('message-to-directory-tree-worker', directory)
   },
   initialize(state, listen, emit) {
+    // These two stops the incessant beeping because we are using native hotkeys without native inputs
+    window.onkeyup = event => {
+      if (document.activeElement.tagName !== 'INPUT') {
+        event.preventDefault();
+      }
+      console.log(document.activeElement.tagName)
+    };
+    window.onkeydown = event => {
+      if (document.activeElement.tagName !== 'INPUT') {
+        event.preventDefault();
+      }
+      console.log(document.activeElement.tagName)
+    };
+
     // Required for plugins
     this.data.state = state
 
@@ -204,6 +219,7 @@ export default {
     })
 
     window.vide.ports.requestFuzzyFindInProjectFileOrDirectory.subscribe(async (fileOrDirectoryName) => {
+      emit('requestFuzzyFindProjects', fileOrDirectoryName)
       // if (!this.data.fuzzyFinder) {
       //   const fuzzyFinder = await import('./features/fuzzyFinder.js')
       //   this.data.fuzzyFinder = fuzzyFinder.default
@@ -237,8 +253,12 @@ export default {
 
     window.vide.ports.requestPasteTerminal.subscribe(async () => {
       this.handlers.requestRunTerminal({
-        contents: await navigator.clipboard.readText(),
+        contents: await readText(),
       })
+    })
+
+    window.vide.ports.requestCopyTerminal.subscribe(async () => {
+      await writeText(window.getSelection().toString().replaceAll("\n", ""))
     })
 
     window.vide.ports.requestSetupTerminalResizeObserver.subscribe(() => {
@@ -294,13 +314,16 @@ export default {
     /**
      * requestCopy
      */
-    window.vide.ports.requestCopy.subscribe(copyToClipboard)
+    window.vide.ports.requestCopy.subscribe(async (contents) => {
+      console.log('copying', contents)
+      await writeText(contents)
+    })
 
     /**
      * requestPaste
      */
-    window.vide.ports.requestPaste.subscribe(() => {
-      navigator.clipboard.readText().then(text => window.vide.ports.receivePaste.send(text))
+    window.vide.ports.requestPaste.subscribe(async () => {
+      window.vide.ports.receivePaste.send(await readText())
     })
 
     window.vide.ports.requestCreateFile.subscribe(async (file) => {

@@ -5,7 +5,7 @@ use std::{
   path::PathBuf,
   sync::mpsc::{self, Receiver, Sender},
 };
-use tauri::{Menu, Window, Wry};
+use tauri::{Menu, Window, Wry, MenuItem, Submenu};
 use terminal::{parse::TerminalCommand, terminal::Size};
 use std::fs::metadata;
 
@@ -13,14 +13,26 @@ use std::fs::metadata;
 async fn main() {
   let context = tauri::generate_context!();
 
+  let menu = Menu::new()
+    .add_submenu(
+      Submenu::new(
+        "Controls",
+        Menu::new()
+          // These are required for this functionality
+          // even though we are not relying on native behavior (OSX)
+          .add_native_item(MenuItem::SelectAll)
+          .add_native_item(MenuItem::Paste)
+          .add_native_item(MenuItem::Copy),
+      )
+    );
+
   tauri::Builder::default()
-    .menu(Menu::new())
+    .menu(menu)
     .on_page_load(|window, _| {
       let window_ = window.clone();
       let window_terminal = window.clone();
       let window_directory_tree_worker = window.clone();
       let window_receive_activated_file = window.clone();
-
 
 
       // Start file tree worker
@@ -39,6 +51,11 @@ async fn main() {
       // Tell file tree worker that the app has initialized
       window.listen("initialized", move |event| {
         filetree_dir_tx.send(event.payload().unwrap().to_string()).unwrap()
+      });
+
+      // Listen for "requestFuzzyFindProjects" event
+      window.listen("requestFuzzyFindProjects", move |event| {
+        println!("{:?}", event.payload())
       });
 
       // Listen for "activateFileOrDirectory" event
