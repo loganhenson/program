@@ -84,6 +84,15 @@ async fn main() {
         }
       });
 
+      // Listen for "save" event
+      window.listen("save", move |event| {
+        let v: Value = serde_json::from_str(event.payload().unwrap()).unwrap();
+        let file = v["file"].as_str().unwrap();
+        let contents = v["contents"].as_str().unwrap();
+
+        fs::write(file, contents).expect("Unable to write file");
+      });
+
       // Set directory & initialize app (with directory positional argument if exists)
       match env::args().skip(1).next() {
         Some(directory) => {

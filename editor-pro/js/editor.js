@@ -86,8 +86,12 @@ export default {
   registerOnChangeFileHandler(handler) {
     this.handlers.onChangeFile.push(handler)
   },
-  async save(contents) {
-      console.log('save called')
+  async save(emit, contents) {
+    console.log('save called')
+    emit('save', JSON.stringify({
+      file: this.data.activeFile,
+      contents: contents,
+    }));
     // if (!this.data.saved) {
     //   return
     // }
@@ -311,7 +315,7 @@ export default {
      * requestSave
      */
     window.vide.ports.requestSave.subscribe(async (contents) => {
-      await this.save(contents)
+      await this.save(emit, contents)
     })
 
     /**
