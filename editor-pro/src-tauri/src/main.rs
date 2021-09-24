@@ -97,9 +97,17 @@ async fn main() {
       match env::args().skip(1).next() {
         Some(directory) => {
           println!("directory: {:?}", directory);
+          let dir = fs::canonicalize(PathBuf::from(directory))
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .unwrap();
+          println!("dir: {:?}", dir);
+
+          start_terminal(window_terminal, dir.clone());
 
           window_
-            .emit("initialize", directory.clone())
+            .emit("initialize", dir)
             .expect("failed to emit");
         }
         None => {
@@ -126,7 +134,7 @@ async fn main() {
           start_terminal(window_terminal, dir.clone());
 
           window_
-            .emit("initialize", dir.clone())
+            .emit("initialize", dir)
             .expect("failed to emit")
         }
       };

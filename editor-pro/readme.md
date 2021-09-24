@@ -50,8 +50,11 @@ cargo tauri build
 ```
 
 ## How to run it from cli on OSX
+> Add this function to your .zshrc
 ```console
-./cli.sh $path
+function e() {
+open -a EditorPro.app --args "$(realpath "$@")"
+}
 ```
 
 > Note: Linux will put the `.deb` file in `./target/release/bundle/deb/..`

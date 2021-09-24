@@ -1,6 +1,6 @@
 {
   "package": {
-    "productName": "Editor Pro",
+    "productName": "EditorPro",
     "version": "0.1.0"
   },
   "build": {
@@ -13,7 +13,7 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.tauri.dev",
+      "identifier": "com.editor-pro.dev",
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",
@@ -53,7 +53,7 @@
     },
     "windows": [
       {
-        "title": "Editor Pro",
+        "title": "EditorPro",
         "width": 800,
         "height": 600,
         "resizable": true,
