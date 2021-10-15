@@ -32,7 +32,7 @@ handleFileTreeMsg m model =
                         _ ->
                             ( model, Cmd.none )
             in
-            ( { nextModel | fileTree = Just nextFileTree }
+            ( { nextModel | fileTree = Just nextFileTree, focused = FileTree }
             , Cmd.batch
                 [ Cmd.map FileTreeMsg fileTreeMsgs
                 , editorMsgs
