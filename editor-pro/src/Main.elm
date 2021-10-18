@@ -222,7 +222,7 @@ update msg model =
                             case fileTree of
                                 Just tree ->
                                     FileTree.FileTree.update (FileTree.Types.ActivateFile file.path) tree
-                                    |> Tuple.mapFirst Just
+                                        |> Tuple.mapFirst Just
 
                                 Nothing ->
                                     ( Nothing, Cmd.none )
@@ -255,7 +255,7 @@ update msg model =
                         , activeFile = Just file.path
                         , focused = Editor
                       }
-                    , Cmd.batch [Cmd.map EditorMsg editorMsgs, Cmd.map FileTreeMsg fileTreeMsgs]
+                    , Cmd.batch [ Cmd.map EditorMsg editorMsgs, Cmd.map FileTreeMsg fileTreeMsgs ]
                     )
 
                 Err error ->

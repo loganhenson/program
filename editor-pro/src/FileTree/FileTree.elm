@@ -251,7 +251,6 @@ update msg model =
                             openParentDirectories model fileOrDirectory
                     in
                     { model | openDirectories = nextOpenDirectories, selectedPaths = Dict.fromList [ ( fileOrDirectory.path, fileOrDirectory ) ] }
-                d = Debug.log "nextSelectedPaths" nextFileTree.selectedPaths
             in
             ( { nextFileTree | activeFile = Just path }
             , Cmd.batch [ Ports.requestScrollIntoView path ]
