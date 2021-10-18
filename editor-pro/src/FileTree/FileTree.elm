@@ -251,6 +251,7 @@ update msg model =
                             openParentDirectories model fileOrDirectory
                     in
                     { model | openDirectories = nextOpenDirectories, selectedPaths = Dict.fromList [ ( fileOrDirectory.path, fileOrDirectory ) ] }
+                d = Debug.log "nextSelectedPaths" nextFileTree.selectedPaths
             in
             ( { nextFileTree | activeFile = Just path }
             , Cmd.batch [ Ports.requestScrollIntoView path ]
@@ -290,6 +291,7 @@ update msg model =
                 | creating = Just { path = path, name = "", type_ = FileOrDirectoryFile }
                 , contextMenu = Nothing
                 , openDirectories = Dict.insert path (FileOrDirectory path (basename path) FileOrDirectoryDirectory) model.openDirectories
+                , selectedPaths = Dict.empty
               }
             , Task.attempt FocusElementByIdResult (focus "vide-create-new-file-input")
             )

@@ -87,7 +87,6 @@ export default {
     this.handlers.onChangeFile.push(handler)
   },
   async save(emit, contents) {
-    console.log('save called')
     emit('save', JSON.stringify({
       file: this.data.activeFile,
       contents: contents,
@@ -135,9 +134,11 @@ export default {
   async activateFileOrDirectory(emit, path) {
     emit('activateFileOrDirectory', path)
   },
-  async createFile(file) {
-    console.log('createFile', file)
-    // await fs.writeFile(file, '', 'utf8')
+  async createFile(emit, file) {
+    emit('createFile', JSON.stringify({
+      directory: this.data.state.directory,
+      file,
+    }))
   },
   async createDirectory(directory) {
     console.log('createDirectory', directory)
@@ -282,7 +283,6 @@ export default {
         let nextHeightIncrement = Math.floor(h * 24);
 
         if (nextWidthIncrement !== prevWidthIncrement || nextHeightIncrement !== prevHeightIncrement) {
-          console.log(w, h)
           prevWidthIncrement = nextWidthIncrement
           prevHeightIncrement = nextHeightIncrement
           this.handlers.requestResizeTerminal({
@@ -322,7 +322,6 @@ export default {
      * requestCopy
      */
     window.vide.ports.requestCopy.subscribe(async (contents) => {
-      console.log('copying', contents)
       await writeText(contents)
     })
 
@@ -334,18 +333,18 @@ export default {
     })
 
     window.vide.ports.requestCreateFile.subscribe(async (file) => {
-      try {
-        await this.createFile(file)
-        await this.refreshDirectory(state.directory)
-        await this.activateFileOrDirectory(emit, file)
-      } catch (e) {
-        if (e.code === 'EISDIR') {
-          this.sendVideError({
-            type: 'FILE_TREE_CREATE_DIRECTORY_ALREADY_EXISTS',
-            message: `There is a clash with a directory named "${path.basename(file)}"!`
-          })
-        }
-      }
+      // try {
+        await this.createFile(emit, file)
+        // await this.refreshDirectory(state.directory)
+        // await this.activateFileOrDirectory(emit, file)
+      // } catch (e) {
+      //   if (e.code === 'EISDIR') {
+      //     this.sendVideError({
+      //       type: 'FILE_TREE_CREATE_DIRECTORY_ALREADY_EXISTS',
+      //       message: `There is a clash with a directory named "${path.basename(file)}"!`
+      //     })
+      //   }
+      // }
     })
 
     window.vide.ports.requestCreateDirectory.subscribe(async (directory) => {

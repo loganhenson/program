@@ -218,6 +218,15 @@ update msg model =
             case Json.Decode.decodeValue decodeJsonFile jsonFile of
                 Ok file ->
                     let
+                        ( nextFileTree, fileTreeMsgs ) =
+                            case fileTree of
+                                Just tree ->
+                                    FileTree.FileTree.update (FileTree.Types.ActivateFile file.path) tree
+                                    |> Tuple.mapFirst Just
+
+                                Nothing ->
+                                    ( Nothing, Cmd.none )
+
                         ( nextEditor, editorMsgs ) =
                             case editor of
                                 Just justEditor ->
@@ -241,11 +250,12 @@ update msg model =
                     in
                     ( { model
                         | editor = Just nextEditor
+                        , fileTree = nextFileTree
                         , fileHistory = addToFileHistory model.fileHistory file.path file.contents
                         , activeFile = Just file.path
                         , focused = Editor
                       }
-                    , Cmd.map EditorMsg editorMsgs
+                    , Cmd.batch [Cmd.map EditorMsg editorMsgs, Cmd.map FileTreeMsg fileTreeMsgs]
                     )
 
                 Err error ->
