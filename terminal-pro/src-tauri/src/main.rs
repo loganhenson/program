@@ -1,9 +1,6 @@
-use std::{
-  sync::mpsc::{self, Receiver, Sender},
-};
+use std::sync::mpsc::{self, Receiver, Sender};
 use tauri::Menu;
-use terminal::parse::TerminalCommand;
-use terminal::terminal::Size;
+use terminal::{parse::TerminalCommand, terminal::Size};
 
 #[tokio::main]
 async fn main() {
@@ -20,7 +17,8 @@ async fn main() {
       let (terminal_resize_tx, terminal_resize_rx): (Sender<Size>, Receiver<Size>) =
         mpsc::channel();
 
-      let terminal_api = terminal::terminal::start("~".to_string(), terminal_output_tx, terminal_resize_tx);
+      let terminal_api =
+        terminal::terminal::start("~".to_string(), terminal_output_tx, terminal_resize_tx);
       let terminal_api_run_tx = terminal_api.run_tx.clone();
       let terminal_api_resize_tx = terminal_api.resize_tx.clone();
       window.listen("run", move |event| {
@@ -36,7 +34,9 @@ async fn main() {
 
       tokio::spawn(async move {
         for message in terminal_resize_rx {
-          window_terminal_resize.emit("sendResizedToTerminal", message).unwrap();
+          window_terminal_resize
+            .emit("sendResizedToTerminal", message)
+            .unwrap();
         }
       });
       tokio::spawn(async move {

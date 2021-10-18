@@ -440,6 +440,7 @@ viewTerminal maybeTerminal focused =
             div
                 [ style "height" "30%"
                 , style "overflow-y" "scroll"
+                , style "overflow-x" "hidden"
                 , style "background" "#262626"
                 , classList
                     [ ( "border-blue-400", focused == Terminal )
