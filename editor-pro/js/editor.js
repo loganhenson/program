@@ -212,6 +212,7 @@ export default {
      * Ports
      */
     window.vide.ports.requestOpenProject.subscribe((directory) => {
+      emit('requestOpenProject', directory)
       // ipcRenderer.send('message-to-directory-tree-worker', directory)
     })
 
@@ -228,16 +229,10 @@ export default {
         directory: state.directory,
         file_or_directory_name: fileOrDirectoryName,
       }))
-      // if (!this.data.fuzzyFinder) {
-      //   const fuzzyFinder = await import('./features/fuzzyFinder.js')
-      //   this.data.fuzzyFinder = fuzzyFinder.default
-      // }
-      //
-      // const filesOrDirectories = await this.data.fuzzyFinder.findInProjectFileOrDirectory(this.data.state.directory, fileOrDirectoryName)
-      // window.vide.ports.receiveFuzzyFindResults.send(filesOrDirectories)
     })
 
     window.vide.ports.requestFuzzyFindProjects.subscribe(async (projectName) => {
+      emit('requestFuzzyFindProjects', projectName)
       // if (!this.data.fuzzyFinder) {
       //   const fuzzyFinder = await import('./features/fuzzyFinder.js')
       //   this.data.fuzzyFinder = fuzzyFinder.default

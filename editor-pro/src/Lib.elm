@@ -139,3 +139,17 @@ requestActivateFileOrDirectory model path updateFileHistory =
                 , Cmd.map FileTreeMsg fileTreeMsgs
                 ]
             )
+
+
+requestOpenProject : Model -> String -> ( Model, Cmd Msg )
+requestOpenProject model directory =
+    let
+        fuzzyFinder =
+            model.fuzzyFinder
+    in
+    ( { model
+        | fuzzyFinder = { fuzzyFinder | fuzzyFindResults = [], fuzzyFinderInputValue = "", fuzzyFinderHighlightedIndex = 0 }
+        , focused = FileTree
+      }
+    , Ports.requestOpenProject directory
+    )

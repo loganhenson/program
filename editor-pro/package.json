@@ -3,7 +3,7 @@
   "tauri": "tauri",
   "build": "npm run elm:optimize; cd src-tauri; cargo tauri build",
   "test": "cd src-tauri/src/filetree; cargo test",
-  "start": "cd src-tauri;DEV_DIRECTORY=../testing-codebase cargo run",
+  "start": "cd src-tauri;DEV_DIRECTORY=~/testing-codebase cargo run",
   "js": "esbuild js/main.js --bundle --outfile=built/js/main.js",
   "js:watch": "chokidar 'js/**/*.js' -c 'npm run js'",
   "elm": "elm make src/Main.elm --output built/elm.js",

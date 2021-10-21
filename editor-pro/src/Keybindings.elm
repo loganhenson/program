@@ -141,12 +141,22 @@ handleKeybindings model msg =
                             )
 
                         else if key.code == "Enter" then
-                            case List.Extra.getAt model.fuzzyFinder.fuzzyFinderHighlightedIndex model.fuzzyFinder.fuzzyFindResults of
-                                Just path ->
-                                    requestActivateFileOrDirectory model path True
+                            case Maybe.map (.fileTree >> .path) model.fileTree of
+                                Just projectPath ->
+                                    case List.Extra.getAt model.fuzzyFinder.fuzzyFinderHighlightedIndex model.fuzzyFinder.fuzzyFindResults of
+                                        Just path ->
+                                            requestActivateFileOrDirectory model path True
 
-                                _ ->
-                                    ( model, Cmd.none )
+                                        _ ->
+                                            ( model, Cmd.none )
+
+                                Nothing ->
+                                    case List.Extra.getAt model.fuzzyFinder.fuzzyFinderHighlightedIndex model.fuzzyFinder.fuzzyFindResults of
+                                        Just directory ->
+                                            Lib.requestOpenProject model directory
+
+                                        _ ->
+                                            ( model, Cmd.none )
 
                         else
                             ( model, Cmd.none )

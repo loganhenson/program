@@ -29,9 +29,11 @@ async fn main() {
     .on_page_load(|window, _| {
       let window_ = window.clone();
       let window_terminal = window.clone();
+      let window_open_project = window.clone();
       let window_directory_tree_worker = window.clone();
       let window_receive_activated_file = window.clone();
       let window_receive_fuzzy_find_results = window.clone();
+      let window_receive_fuzzy_find_projects_results = window.clone();
       let window_create_file = window.clone();
 
       // Start file tree worker
@@ -68,6 +70,33 @@ async fn main() {
             ),
           )
           .expect("failed to emit receiveFuzzyFindResults")
+      });
+
+      window.listen("requestFuzzyFindProjects", move |event| {
+        let project = event.payload().unwrap();
+
+        window_receive_fuzzy_find_projects_results
+          .emit(
+            "receiveFuzzyFindResults",
+            find_project(project)
+          )
+          .expect("failed to emit receiveFuzzyFindResults")
+      });
+
+      window.listen("requestOpenProject", move |event| {
+        let directory = event.payload().unwrap();
+        println!("requestOpenProject directory: {:?}", directory);
+
+        let dir = fs::canonicalize(PathBuf::from(directory))
+          .unwrap()
+          .into_os_string()
+          .into_string()
+          .unwrap();
+
+        println!("requestOpenProject dir: {:?}", dir);
+
+        start_terminal(&window_open_project, dir.clone());
+        window_open_project.emit("initialize", dir).expect("failed to emit");
       });
 
       window.listen("activateFileOrDirectory", move |event| {
@@ -139,34 +168,33 @@ async fn main() {
             .unwrap();
           println!("dir: {:?}", dir);
 
-          start_terminal(window_terminal, dir.clone());
-
+          start_terminal(&window_terminal, dir.clone());
           window_.emit("initialize", dir).expect("failed to emit");
         }
         None => {
-          let dir = match env::var("DEV_DIRECTORY") {
+          match env::var("DEV_DIRECTORY") {
             Ok(dir) => {
               println!("dev mode, using {:?}", dir);
-              fs::canonicalize(PathBuf::from(dir))
+              fs::canonicalize(PathBuf::from(&dir))
                 .unwrap()
                 .into_os_string()
                 .into_string()
-                .unwrap()
+                .unwrap();
+
+              // Start the terminal in the working directory
+              start_terminal(&window_terminal, dir.clone());
+              window_.emit("initialize", &dir).expect("failed to emit")
             }
             Err(_) => {
-              println!("using current working directory");
-              fs::canonicalize(env::current_dir().unwrap())
-                .unwrap()
-                .into_os_string()
-                .into_string()
-                .unwrap()
+              println!("need a project!");
+              window_.emit("initialize", "").expect("failed to emit")
+              // fs::canonicalize(env::current_dir().unwrap())
+              //   .unwrap()
+              //   .into_os_string()
+              //   .into_string()
+              //   .unwrap()
             }
           };
-
-          // Start the terminal in the working directory
-          start_terminal(window_terminal, dir.clone());
-
-          window_.emit("initialize", dir).expect("failed to emit")
         }
       };
     })
@@ -174,7 +202,7 @@ async fn main() {
     .expect("failed to run app");
 }
 
-fn start_terminal(window: Window<Wry>, directory: String) {
+fn start_terminal(window: &Window<Wry>, directory: String) {
   let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
 
@@ -219,6 +247,28 @@ fn find_in_project_file_or_directory(directory: &str, file_or_directory_name: &s
     "--hidden".to_string(),
     "--glob".to_string(),
     "--exclude=.git".to_string(),
+  ];
+
+  let output = Command::new("fd")
+    .args(args)
+    .output()
+    .expect("failed to execute fd");
+
+  String::from_utf8_lossy(&output.stdout)
+    .lines()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+fn find_project(project_name: &str) -> Vec<String> {
+  let home = std::env::var("HOME").unwrap();
+
+  let args = [
+    "--type=d",
+    "--max-depth=3",
+    "--full-path",
+    &format!("{}/(Desktop|Township)/{}([^/]*)$", home, project_name),
+    &home,
   ];
 
   let output = Command::new("fd")

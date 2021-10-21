@@ -175,17 +175,13 @@ update msg model =
             ( nextModel, Cmd.none )
 
         RequestOpenProject directory ->
-            ( { nextModel
-                | fuzzyFinder = { fuzzyFinder | fuzzyFindResults = [] }
-              }
-            , Ports.requestOpenProject directory
-            )
+            Lib.requestOpenProject nextModel directory
 
         FuzzyFindInProjectFileOrDirectory string ->
             ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFinderInputValue = string } }, Ports.requestFuzzyFindInProjectFileOrDirectory string )
 
         FuzzyFindProjects string ->
-            ( nextModel, Ports.requestFuzzyFindProjects string )
+            ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFinderInputValue = string } }, Ports.requestFuzzyFindProjects string )
 
         ReceivedFuzzyFindResults results ->
             ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFindResults = results } }, Cmd.none )
@@ -337,13 +333,21 @@ viewFileTree model =
     case model.fileTreeShowing of
         True ->
             div
-                [ class "border overflow-scroll bg-lightgray_transparent h-full w-full"
-                , onClick FocusFileTree
-                , classList
+                ([ class "border overflow-scroll bg-lightgray_transparent h-full w-full"
+                 , onClick FocusFileTree
+                 , classList
                     [ ( "border-blue-400", model.focused == FileTree )
                     , ( "border-lightgray_transparent", model.focused /= FileTree )
                     ]
-                ]
+                 ]
+                    ++ (case model.terminalShowing of
+                            False ->
+                                [ style "border-bottom-left-radius" "12px" ]
+
+                            True ->
+                                []
+                       )
+                )
                 [ Html.map FileTreeMsg <|
                     Html.Lazy.lazy
                         FileTree.FileTree.view
@@ -359,13 +363,25 @@ viewEditor model =
     case model.editor of
         Just editor ->
             div
-                [ class "w-full h-full border"
-                , onClick FocusEditor
-                , classList
+                ([ class "w-full h-full border overflow-hidden"
+                 , style "will-change" "contents"
+                 , onClick FocusEditor
+                 , classList
                     [ ( "border-blue-400", model.focused == Editor )
                     , ( "border-lightgray-transparent", model.focused /= Editor )
                     ]
-                ]
+                 ]
+                    ++ (case ( model.fileTreeShowing, model.terminalShowing ) of
+                            ( False, False ) ->
+                                [ style "border-radius" "0 0 12px 12px" ]
+
+                            ( True, False ) ->
+                                [ style "border-radius" "0 0 12px 0" ]
+
+                            ( _, _ ) ->
+                                []
+                       )
+                )
                 [ Html.map EditorMsg <|
                     Html.Lazy.lazy
                         Editor.view
@@ -442,6 +458,8 @@ viewTerminal maybeTerminal focused =
                 , style "overflow-y" "scroll"
                 , style "overflow-x" "hidden"
                 , style "background" "#262626"
+                , style "border-bottom-left-radius" "12px"
+                , style "border-bottom-right-radius" "12px"
                 , classList
                     [ ( "border-blue-400", focused == Terminal )
                     , ( "border-lightgray-transparent", focused /= Terminal )
