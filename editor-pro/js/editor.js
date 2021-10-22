@@ -176,6 +176,11 @@ export default {
     // Language specific plugins are lazily loaded upon opening a file of that type
     this.startPlugin('terminal', listen, emit)
 
+    // Rust debugging
+    listen('log', event => {
+      console.log('rust log:', event.payload)
+    })
+
     // Directory tree
     listen('message-from-directory-tree-worker', event => {
       window.vide.ports.receiveFileTree.send(event.payload);

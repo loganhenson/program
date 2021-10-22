@@ -392,7 +392,17 @@ viewEditor model =
             div
                 [ class "flex-1 flex justify-center h-full items-center text-2xl"
                 ]
-                [ text "Select a file" ]
+                [ text
+                    ("Select a "
+                        ++ (case Maybe.map (.fileTree >> .path) model.fileTree of
+                                Just _ ->
+                                    "file"
+
+                                Nothing ->
+                                    "project"
+                           )
+                    )
+                ]
 
 
 viewFuzzyFinder : Model -> Html.Html Msg

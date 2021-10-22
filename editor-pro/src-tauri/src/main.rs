@@ -76,10 +76,7 @@ async fn main() {
         let project = event.payload().unwrap();
 
         window_receive_fuzzy_find_projects_results
-          .emit(
-            "receiveFuzzyFindResults",
-            find_project(project)
-          )
+          .emit("receiveFuzzyFindResults", find_project(project))
           .expect("failed to emit receiveFuzzyFindResults")
       });
 
@@ -96,7 +93,9 @@ async fn main() {
         println!("requestOpenProject dir: {:?}", dir);
 
         start_terminal(&window_open_project, dir.clone());
-        window_open_project.emit("initialize", dir).expect("failed to emit");
+        window_open_project
+          .emit("initialize", dir)
+          .expect("failed to emit");
       });
 
       window.listen("activateFileOrDirectory", move |event| {
@@ -271,7 +270,7 @@ fn find_project(project_name: &str) -> Vec<String> {
     &home,
   ];
 
-  let output = Command::new("fd")
+  let output = Command::new("/usr/local/bin/fd")
     .args(args)
     .output()
     .expect("failed to execute fd");
