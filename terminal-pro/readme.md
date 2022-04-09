@@ -19,7 +19,7 @@ cd src-tauri
 cargo build
 ```
 
-> Get npm deps (elm)
+> Get npm deps (elm & tauri cli)
 ```console
 npm install
 ```
@@ -32,14 +32,6 @@ npm run watch
 ## Test
 ```console
 npm run test
-```
-
-## Build for distribution
-> Install the Tauri rust cli globally
-```console
-> cargo install tauri-cli --version ^1.0.0-beta
-> cargo tauri --version
-cargo-tauri 1.0.0-beta.0
 ```
 
 > Actual build
