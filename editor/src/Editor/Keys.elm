@@ -4,6 +4,7 @@ import Editor.Clipboard
 import Editor.Lib
 import Editor.Mode.Insert.Insert as InsertMode
 import Editor.Mode.Normal.Normal as NormalMode
+import Editor.Mode.VisualLine.VisualLine as VisualLineMode
 import Editor.Msg exposing (CompletionRequest, Model, Msg, SelectionState(..))
 import Editor.RawKeyboard exposing (Msg(..), RawKey)
 import Editor.Syntax.Util exposing (getCurrentToken)
@@ -157,3 +158,6 @@ update rawKey model =
 
                     Editor.Msg.Normal ->
                         NormalMode.update key model
+
+                    Editor.Msg.VisualLine ->
+                        VisualLineMode.update key model

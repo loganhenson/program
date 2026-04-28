@@ -56,6 +56,7 @@ type alias CompletionRequest =
 type Mode
     = Insert
     | Normal
+    | VisualLine
 
 
 type SelectionState
@@ -123,6 +124,7 @@ type alias Model =
     , errors : List Error
     , selectionState : SelectionState
     , selection : Maybe Selection
+    , visualLineAnchor : Maybe Int
     , travelable : Travelable
     , histories : Dict String HistoryIndexAndHistory
     , completions : List Completion

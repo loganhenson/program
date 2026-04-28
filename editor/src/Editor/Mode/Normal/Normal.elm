@@ -21,6 +21,7 @@ import Editor.Mode.Normal.Handlers.P as P
 import Editor.Mode.Normal.Handlers.R as R
 import Editor.Mode.Normal.Handlers.ShiftA as ShiftA
 import Editor.Mode.Normal.Handlers.ShiftG as ShiftG
+import Editor.Mode.Normal.Handlers.ShiftV as ShiftV
 import Editor.Mode.Normal.Handlers.ShiftW as ShiftW
 import Editor.Mode.Normal.Handlers.W as W
 import Editor.Mode.Normal.Handlers.X as X
@@ -40,6 +41,9 @@ update key model =
 
     else if key.shiftKey && key.code == "KeyG" then
         ShiftG.handle model
+
+    else if key.shiftKey && key.code == "KeyV" then
+        ShiftV.handle model
 
     else if key.shiftKey && key.code == "KeyW" then
         ShiftW.handle model

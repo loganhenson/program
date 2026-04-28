@@ -86,6 +86,7 @@ changeFile model file contents =
                 , errors = []
                 , selectionState = Editor.Msg.None
                 , selection = Nothing
+                , visualLineAnchor = Nothing
                 , travelable = nextTravelable
                 , completions = []
                 , selectedCompletionIndex = 0
@@ -113,6 +114,7 @@ loadNewFile model file contents =
         , errors = []
         , selectionState = Editor.Msg.None
         , selection = Nothing
+        , visualLineAnchor = Nothing
         , travelable = travelable
         , completions = []
         , selectedCompletionIndex = 0
@@ -317,6 +319,13 @@ addMsg message ( model, msg ) =
 updateSelection : Maybe Editor.Msg.Selection -> ( Editor.Msg.Model, Cmd msg ) -> ( Editor.Msg.Model, Cmd msg )
 updateSelection selection ( model, msg ) =
     ( { model | selection = selection }
+    , Cmd.batch <| msg :: []
+    )
+
+
+updateVisualLineAnchor : Maybe Int -> ( Editor.Msg.Model, Cmd msg ) -> ( Editor.Msg.Model, Cmd msg )
+updateVisualLineAnchor anchor ( model, msg ) =
+    ( { model | visualLineAnchor = anchor }
     , Cmd.batch <| msg :: []
     )
 
@@ -670,6 +679,7 @@ init active file contents config ports =
     , errors = []
     , selectionState = Editor.Msg.None
     , selection = Nothing
+    , visualLineAnchor = Nothing
     , travelable = travelable
     , histories = Dict.fromList [ ( file, ( 0, [ travelable ] ) ) ]
     , completions = []

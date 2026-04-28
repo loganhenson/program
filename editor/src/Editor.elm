@@ -244,6 +244,7 @@ viewEditor model =
          , Html.Attributes.classList
             [ ( "mode--normal", model.mode == Editor.Msg.Normal )
             , ( "mode--insert", model.mode == Editor.Msg.Insert )
+            , ( "mode--visual-line", model.mode == Editor.Msg.VisualLine )
             ]
          , Html.Attributes.style "min-height" ((String.fromInt <| Constants.lineHeight * List.length model.travelable.renderableLines) ++ "px")
          ]

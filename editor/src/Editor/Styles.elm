@@ -155,7 +155,7 @@ editorPseudoStyles =
     }
 
     /** Normal mode cursor **/
-    .mode--normal .cursor::before {
+    .mode--normal .cursor::before, .mode--visual-line .cursor::before {
         content: " ";
         white-space: pre;
         position: absolute;
