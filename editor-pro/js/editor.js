@@ -230,8 +230,11 @@ export default {
     })
 
     window.vide.ports.requestFuzzyFindInProjectFileOrDirectory.subscribe(async (fileOrDirectoryName) => {
+      // Read from this.data.state (live) — capturing `state` here would freeze
+      // the directory at the value used during the *first* editor.initialize
+      // call (which was "" for apps started without DEV_DIRECTORY/arg).
       emit('requestFuzzyFindInProjectFileOrDirectory', {
-        directory: state.directory,
+        directory: this.data.state.directory,
         file_or_directory_name: fileOrDirectoryName,
       })
     })

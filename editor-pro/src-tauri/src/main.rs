@@ -86,8 +86,8 @@ fn bootstrap(window: WebviewWindow<Wry>) {
       .emit(
         "receiveFuzzyFindResults",
         find_in_project_file_or_directory(
-          v["directory"].as_str().unwrap(),
-          v["file_or_directory_name"].as_str().unwrap(),
+          v["directory"].as_str().unwrap_or(""),
+          v["file_or_directory_name"].as_str().unwrap_or(""),
         ),
       )
       .expect("failed to emit receiveFuzzyFindResults")
@@ -266,6 +266,10 @@ fn find_in_project_file_or_directory(directory: &str, file_or_directory_name: &s
     eprintln!("fd not found on PATH; install with `brew install fd`");
     return vec![];
   };
+
+  if directory.is_empty() {
+    return vec![];
+  }
 
   let args = [
     "*".to_owned() + file_or_directory_name + "*",
