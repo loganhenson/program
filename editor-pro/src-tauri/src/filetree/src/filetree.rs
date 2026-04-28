@@ -9,32 +9,32 @@ use std::{
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct File {
   pub path: String,
   pub contents: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct FileOrDirectory {
   pub path: String,
   pub name: String,
   pub type_: FileOrDirectoryType,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct FileTreeAndFlat {
   pub tree: FileTree,
   pub flat: Vec<FileOrDirectory>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum FileOrDirectoryType {
   File,
   Directory,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct FileTree {
   pub path: String,
   pub name: String,

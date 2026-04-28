@@ -7,4 +7,6 @@ import { emit, listen } from '@tauri-apps/api/event'
   await listen('web', event => {
     window.location = event.payload;
   })
+
+  await emit('frontend-ready', null)
 })()

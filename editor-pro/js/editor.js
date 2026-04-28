@@ -1,5 +1,5 @@
 import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
-import {readText, writeText} from "@tauri-apps/api/clipboard";
+import {readText, writeText} from "@tauri-apps/plugin-clipboard-manager";
 
 // import {listen} from "@tauri-apps/api/event";
 
@@ -87,10 +87,10 @@ export default {
     this.handlers.onChangeFile.push(handler)
   },
   async save(emit, contents) {
-    emit('save', JSON.stringify({
+    emit('save', {
       file: this.data.activeFile,
       contents: contents,
-    }));
+    });
     // if (!this.data.saved) {
     //   return
     // }
@@ -135,10 +135,10 @@ export default {
     emit('activateFileOrDirectory', path)
   },
   async createFile(emit, file) {
-    emit('createFile', JSON.stringify({
+    emit('createFile', {
       directory: this.data.state.directory,
       file,
-    }))
+    })
   },
   async createDirectory(directory) {
     console.log('createDirectory', directory)
@@ -230,10 +230,10 @@ export default {
     })
 
     window.vide.ports.requestFuzzyFindInProjectFileOrDirectory.subscribe(async (fileOrDirectoryName) => {
-      emit('requestFuzzyFindInProjectFileOrDirectory', JSON.stringify({
+      emit('requestFuzzyFindInProjectFileOrDirectory', {
         directory: state.directory,
         file_or_directory_name: fileOrDirectoryName,
-      }))
+      })
     })
 
     window.vide.ports.requestFuzzyFindProjects.subscribe(async (projectName) => {

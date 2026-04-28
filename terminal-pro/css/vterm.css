@@ -33,3 +33,14 @@ body {
     background: var(--background-color);
     color: #d4d4d4;
 }
+
+html, body, #vterm {
+    height: 100%;
+    overscroll-behavior: none;
+}
+
+#terminal-container {
+    scroll-behavior: auto !important;
+    overflow-anchor: none;
+    overscroll-behavior: contain;
+}

@@ -19,7 +19,7 @@ export default {
     })
 
     editor.registerOnTerminalResize(async ({ height, width }) => {
-      emit('resize', JSON.stringify({ height, width }))
+      emit('resize', { height, width })
     })
   }
 }

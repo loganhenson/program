@@ -1,4 +1,11 @@
 module.exports = {
+  content: [
+    './src/**/*.elm',
+    '../editor/src/**/*.elm',
+    '../terminal/src/**/*.elm',
+    './js/**/*.js',
+    './built/index.html',
+  ],
   theme: {
     extend: {
       colors: {
@@ -9,6 +16,5 @@ module.exports = {
       }
     }
   },
-  variants: {},
   plugins: []
 }

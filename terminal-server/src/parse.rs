@@ -475,6 +475,33 @@ pub fn parse(data: &str, mut output: impl FnMut(TerminalCommand) -> ()) -> Vec<T
                 None => (),
             }
 
+            // Same as REGEX_SET_TITLE_AND_ICON but ST (ESC \) terminated instead of BEL.
+            // oh-my-zsh emits this form for the cwd OSC sequence.
+            lazy_static! {
+                static ref REGEX_SET_TITLE_AND_ICON_ST: Regex =
+                    Regex::new(r"^\]([0127]);([^\x1b]+)\x1b\\$").unwrap();
+            }
+            match REGEX_SET_TITLE_AND_ICON_ST.captures(&subcollector) {
+                Some(matches) => {
+                    let kind = match matches.get(1).unwrap().as_str() {
+                        "0" => "set-icon-name-and-window-title",
+                        "1" => "set-icon-name",
+                        "2" => "set-window-title",
+                        _ => "set-mystery-title",
+                    };
+                    let command = TerminalCommand::TerminalCommandSequenceAndSingleStringArgument {
+                        command: kind.to_string(),
+                        argument: matches.get(2).unwrap().as_str().to_string(),
+                    };
+                    collected.push(command.clone());
+                    output(command);
+                    subcollector = "".to_string();
+                    mid_sequence = false;
+                    continue;
+                }
+                None => (),
+            }
+
             /* ASCII CONTROL CHARACTERS */
             /* Handle \r inside escape sequences */
             if subcollector.ends_with("\r") {

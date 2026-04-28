@@ -278,7 +278,7 @@ viewScrollback terminal =
 
 view : Model -> Html.Html Msg
 view model =
-    div [ class "overflow-hidden" ]
+    div [ class "w-full h-full overflow-hidden" ]
         [ div [ id "terminal-container", class "w-full h-full overflow-y-scroll p-1" ]
             [ viewScrollback model.terminal
             , Html.map TerminalEditorMsg <|
@@ -991,8 +991,15 @@ cleanMultilineSymbols renderableLine start =
 
 scrollToBottom : String -> Cmd Msg
 scrollToBottom id =
+    -- Two rAF-equivalent ticks: first task lets layout settle (getViewportOf forces
+    -- a measurement), second sets the scroll position to the (now correct) scene
+    -- height. The previous one-shot chain raced against layout in wry 0.54.
     getViewportOf id
-        |> Task.andThen (\info -> setViewportOf id 0 info.scene.height)
+        |> Task.andThen
+            (\_ ->
+                getViewportOf id
+                    |> Task.andThen (\info -> setViewportOf id 0 info.scene.height)
+            )
         |> Task.attempt (\_ -> NoOp)
 
 

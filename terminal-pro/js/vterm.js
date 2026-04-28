@@ -1,6 +1,6 @@
 const terminals = require('./terminals.js')
-import {readText, writeText} from '@tauri-apps/api/clipboard'
-import {exit} from '@tauri-apps/api/process';
+import {readText, writeText} from '@tauri-apps/plugin-clipboard-manager'
+import {exit} from '@tauri-apps/plugin-process';
 
 let _debounce = function(ms, fn) {
   let timer;

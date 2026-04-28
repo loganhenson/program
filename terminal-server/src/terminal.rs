@@ -51,13 +51,22 @@ pub fn start(
 
     // Spawn a shell into the pty
     std::env::set_var("TERM", "xterm-256color");
-    let mut cmd = CommandBuilder::new_default_prog();
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    // -l makes it a login shell (sources .zprofile/.zlogin),
+    // -i makes it interactive (sources .zshrc, including oh-my-zsh)
+    cmd.arg("-l");
+    cmd.arg("-i");
     cmd.cwd(directory);
+    // Inherit current process env - portable-pty by default uses minimal env
+    for (key, value) in std::env::vars() {
+        cmd.env(key, value);
+    }
     let _child = pair.slave.spawn_command(cmd).unwrap();
 
     // Read and parse output from the pty with reader
     let mut reader = pair.master.try_clone_reader().unwrap();
-    let mut writer = pair.master.try_clone_writer().unwrap();
+    let mut writer = pair.master.take_writer().unwrap();
 
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -171,7 +180,7 @@ pub fn start(
         }
     });
 
-    tokio::spawn(async move {
+    thread::spawn(move || {
         for received in run_rx {
             match writer.write(received.as_ref()) {
                 _ => {

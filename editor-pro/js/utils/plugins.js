@@ -46,5 +46,6 @@ function phpOnly (filePath, callback) {
 }
 
 async function getPlugin (name) {
-  return import(`../plugins/${pluginsList[name]}.js`)
+  const path = '../plugins/' + pluginsList[name] + '.js'
+  return import(/* @vite-ignore */ path)
 }

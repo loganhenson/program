@@ -1,9 +1,10 @@
 {
  "scripts": {
   "tauri": "tauri",
-  "build": "npm run elm:optimize; cd src-tauri; tauri build",
-  "test": "cd ../terminal-server; cargo test",
-  "start": "cd src-tauri; cargo run",
+  "build": "npm run elm:optimize && npm run js && npm run css && npx tauri build",
+  "test": "cd ../terminal-server && cargo test",
+  "start": "cd src-tauri && cargo run",
+  "dev": "npm run elm:optimize && npm run js && npm run css && npx tauri dev",
   "js": "esbuild js/main.js --bundle --outfile=built/js/main.js",
   "js:watch": "chokidar 'js/**/*.js' -c 'npm run js'",
   "elm": "elm make src/Main.elm --output built/elm.js",
@@ -14,17 +15,19 @@
   "watch": "concurrently \"npm:elm\" \"npm:css\" \"npm:js\" \"npm:elm:watch\" \"npm:css:watch\" \"npm:js:watch\" \"npm:start\" --kill-others-on-fail"
  },
  "devDependencies": {
-  "@tauri-apps/api": "^1.0.0-beta.8",
-  "@tauri-apps/cli": "^1.0.0-rc.8",
-  "autoprefixer": "^10.1.0",
+  "@tauri-apps/api": "^2",
+  "@tauri-apps/cli": "^2",
+  "@tauri-apps/plugin-clipboard-manager": "^2",
+  "@tauri-apps/plugin-process": "^2",
+  "autoprefixer": "^10.4.20",
   "chokidar-cli": "^3.0.0",
-  "concurrently": "^6.2.1",
+  "concurrently": "^9.1.0",
   "elm": "^0.19.1-5",
   "elm-test": "^0.19.1-revision7",
-  "esbuild": "^0.12.17",
-  "postcss": "^8.2.1",
-  "postcss-cli": "^8.3.1",
-  "postcss-import": "^14.0.2",
-  "tailwindcss": "^2.2.15"
+  "esbuild": "^0.24.0",
+  "postcss": "^8.4.49",
+  "postcss-cli": "^11.0.0",
+  "postcss-import": "^16.1.0",
+  "tailwindcss": "^3.4.15"
  }
 }
