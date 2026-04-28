@@ -6,6 +6,7 @@ import Editor.Mode.Insert.Handlers.LeftArrow as LeftArrow
 import Editor.Mode.Insert.Handlers.RightArrow as RightArrow
 import Editor.Mode.Insert.Handlers.UpArrow as UpArrow
 import Editor.Mode.Normal.Handlers.CW as CW
+import Editor.Mode.Normal.Handlers.CtrlR as CtrlR
 import Editor.Mode.Normal.Handlers.D as D
 import Editor.Mode.Normal.Handlers.DD as DD
 import Editor.Mode.Normal.Handlers.DW as DW
@@ -23,6 +24,7 @@ import Editor.Mode.Normal.Handlers.ShiftA as ShiftA
 import Editor.Mode.Normal.Handlers.ShiftG as ShiftG
 import Editor.Mode.Normal.Handlers.ShiftV as ShiftV
 import Editor.Mode.Normal.Handlers.ShiftW as ShiftW
+import Editor.Mode.Normal.Handlers.U as U
 import Editor.Mode.Normal.Handlers.W as W
 import Editor.Mode.Normal.Handlers.X as X
 import Editor.Mode.Normal.Handlers.YY as YY
@@ -35,6 +37,9 @@ update : RawKey -> Editor.Msg.Model -> ( Editor.Msg.Model, Cmd Msg )
 update key model =
     if key.code == "Escape" then
         Escape.handle model
+
+    else if key.ctrlKey && key.code == "KeyR" then
+        CtrlR.handle model
 
     else if key.shiftKey && key.code == "KeyA" then
         ShiftA.handle model
@@ -98,6 +103,9 @@ update key model =
 
     else if key.code == "KeyO" then
         O.handle model
+
+    else if key.code == "KeyU" && not key.shiftKey then
+        U.handle model
 
     else if key.code == "ArrowLeft" then
         LeftArrow.handle model
