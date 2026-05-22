@@ -42,6 +42,10 @@ type Msg
     | CloseRequested Int
     | CloseConfirmed Int
     | DisarmCloseTick
-    | TerminalMsgFor String Terminal.Types.Msg
+    | TerminalMsgFor String String Terminal.Types.Msg
     | NoOp
     | WorkspaceInitialized Json.Encode.Value
+    | OpenTerminal
+    | SelectTerminal Int
+    | CloseTerminalRequested Int
+    | CloseTerminalConfirmed Int

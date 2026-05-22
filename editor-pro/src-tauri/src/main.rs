@@ -43,11 +43,12 @@ struct TerminalSlot {
   _kill_tx: Sender<()>,
 }
 
-/// Everything Rust holds on behalf of one open project tab. Dropping
-/// this entry from the `Workspaces` map deactivates the terminal, drops
-/// the file/project watchers (which cleanly cancels their fsevent
-/// callbacks), and closes the filetree worker channel (whose worker
-/// thread then exits on next recv).
+/// Everything Rust holds on behalf of one open project tab. Each
+/// workspace owns its own terminal map keyed by `terminalId` (Elm
+/// generates the id when the user adds a tab). Dropping this entry
+/// reaps every terminal in the map (each TerminalSlot's _kill_tx
+/// reaches its kill-watcher), and drops the watchers + filetree worker
+/// channel.
 ///
 /// `file_watcher` and `project_watcher` are held to keep their fsevent
 /// callbacks alive — Rust's dead-code warning doesn't account for RAII
@@ -57,12 +58,14 @@ struct WorkspaceState {
   file_watcher: Option<RecommendedWatcher>,
   project_watcher: Option<RecommendedWatcher>,
   filetree_dir_tx: Sender<String>,
-  terminal: TerminalSlot,
+  terminals: HashMap<String, TerminalSlot>,
 }
 
 impl Drop for WorkspaceState {
   fn drop(&mut self) {
-    self.terminal.is_active.store(false, Ordering::Relaxed);
+    for slot in self.terminals.values() {
+      slot.is_active.store(false, Ordering::Relaxed);
+    }
   }
 }
 
@@ -454,6 +457,9 @@ fn bootstrap(
   let workspaces_for_activate = workspaces.clone();
   let workspaces_for_run = workspaces.clone();
   let workspaces_for_resize = workspaces.clone();
+  let workspaces_for_open_term = workspaces.clone();
+  let workspaces_for_close_term = workspaces.clone();
+  let window_for_open_term = window.clone();
 
   let window_for_open = window.clone();
   let window_for_activate = window.clone();
@@ -467,8 +473,8 @@ fn bootstrap(
   let recents_for_projects = recents.clone();
   let app_for_open = app.clone();
 
-  // `run` and `resize` look up the workspace in the map and forward to
-  // that workspace's terminal channels. Registered once, not per-workspace.
+  // `run` and `resize` look up (workspace, terminal) in the maps and
+  // forward to that specific terminal's channels. Registered once.
   window.listen("run", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
@@ -478,12 +484,18 @@ fn bootstrap(
       Some(s) => s.to_string(),
       None => return,
     };
+    let terminal_id = match v["terminalId"].as_str() {
+      Some(s) => s.to_string(),
+      None => return,
+    };
     let contents = match v["contents"].as_str() {
       Some(s) => s.to_string(),
       None => return,
     };
     if let Some(ws) = workspaces_for_run.lock().unwrap().get(&workspace_id) {
-      let _ = ws.terminal.run_tx.send(contents);
+      if let Some(slot) = ws.terminals.get(&terminal_id) {
+        let _ = slot.run_tx.send(contents);
+      }
     }
   });
   window.listen("resize", move |event| {
@@ -495,12 +507,18 @@ fn bootstrap(
       Some(s) => s.to_string(),
       None => return,
     };
+    let terminal_id = match v["terminalId"].as_str() {
+      Some(s) => s.to_string(),
+      None => return,
+    };
     let size: Size = match serde_json::from_value(v["size"].clone()) {
       Ok(s) => s,
       Err(_) => return,
     };
     if let Some(ws) = workspaces_for_resize.lock().unwrap().get(&workspace_id) {
-      let _ = ws.terminal.resize_tx.send(size);
+      if let Some(slot) = ws.terminals.get(&terminal_id) {
+        let _ = slot.resize_tx.send(size);
+      }
     }
   });
 
@@ -603,15 +621,16 @@ fn bootstrap(
           None
         }
       };
-      let terminal = spawn_terminal_for_workspace(&window_for_open, dir.clone(), dir.clone());
 
+      // Terminals are spawned lazily via `openTerminal` events; the Elm
+      // side auto-fires one when the workspace is first created.
       workspaces_for_open.lock().unwrap().insert(
         dir.clone(),
         WorkspaceState {
           file_watcher: None,
           project_watcher,
           filetree_dir_tx,
-          terminal,
+          terminals: HashMap::new(),
         },
       );
     }
@@ -622,9 +641,73 @@ fn bootstrap(
     );
   });
 
+  // Open a new terminal session in a workspace. Spawns a PTY in the
+  // workspace's project directory and inserts it into the workspace's
+  // `terminals` map under the Elm-provided id.
+  window.listen("openTerminal", move |event| {
+    let v: Value = match serde_json::from_str(event.payload()) {
+      Ok(v) => v,
+      Err(_) => return,
+    };
+    let workspace_id = match v["workspaceId"].as_str() {
+      Some(s) => s.to_string(),
+      None => return,
+    };
+    let terminal_id = match v["terminalId"].as_str() {
+      Some(s) => s.to_string(),
+      None => return,
+    };
+
+    // Resolve the project's directory from the workspace state so we
+    // spawn the shell at the right cwd.
+    let directory = {
+      let workspaces_guard = workspaces_for_open_term.lock().unwrap();
+      if workspaces_guard.contains_key(&workspace_id) {
+        workspace_id.clone()
+      } else {
+        eprintln!("openTerminal: unknown workspace {}", workspace_id);
+        return;
+      }
+    };
+
+    let new_slot = spawn_terminal_for_workspace(
+      &window_for_open_term,
+      workspace_id.clone(),
+      terminal_id.clone(),
+      directory,
+    );
+
+    let mut workspaces_guard = workspaces_for_open_term.lock().unwrap();
+    if let Some(ws) = workspaces_guard.get_mut(&workspace_id) {
+      ws.terminals.insert(terminal_id, new_slot);
+    }
+  });
+
+  // Close one terminal session within a workspace. Dropping the slot
+  // reaps the PTY (via terminal-server's kill-watcher).
+  window.listen("closeTerminal", move |event| {
+    let v: Value = match serde_json::from_str(event.payload()) {
+      Ok(v) => v,
+      Err(_) => return,
+    };
+    let workspace_id = match v["workspaceId"].as_str() {
+      Some(s) => s.to_string(),
+      None => return,
+    };
+    let terminal_id = match v["terminalId"].as_str() {
+      Some(s) => s.to_string(),
+      None => return,
+    };
+
+    let mut workspaces_guard = workspaces_for_close_term.lock().unwrap();
+    if let Some(ws) = workspaces_guard.get_mut(&workspace_id) {
+      ws.terminals.remove(&terminal_id);
+    }
+  });
+
   // Close a project tab. Dropping the entry tears down its watchers +
-  // filetree worker; the terminal's `is_active` flips false in
-  // `WorkspaceState::drop`.
+  // filetree worker; each terminal in the workspace's `terminals` map
+  // is reaped via the same Drop chain.
   window.listen("closeWorkspace", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
@@ -805,8 +888,6 @@ fn bootstrap(
         None
       }
     };
-    let terminal =
-      spawn_terminal_for_workspace(&window, canonical.clone(), canonical.clone());
 
     workspaces.lock().unwrap().insert(
       canonical.clone(),
@@ -814,7 +895,7 @@ fn bootstrap(
         file_watcher: None,
         project_watcher,
         filetree_dir_tx,
-        terminal,
+        terminals: HashMap::new(),
       },
     );
 
@@ -828,18 +909,21 @@ fn bootstrap(
   }
 }
 
-/// Spawn a per-workspace PTY + output/resize emitter threads. The `output`
-/// and `sendResizedToTerminal` events both include `workspaceId` so the
-/// Elm side can route to the right workspace's terminal model.
+/// Spawn one PTY for a given (workspace, terminal) pair. Output/resize
+/// events both carry `workspaceId` AND `terminalId` so Elm can route to
+/// the specific terminal model regardless of which is active.
 fn spawn_terminal_for_workspace(
   window: &WebviewWindow<Wry>,
   workspace_id: String,
+  terminal_id: String,
   directory: String,
 ) -> TerminalSlot {
   let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
   let ws_for_output = workspace_id.clone();
   let ws_for_resize = workspace_id;
+  let term_for_output = terminal_id.clone();
+  let term_for_resize = terminal_id;
 
   let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Vec<TerminalCommand>>();
   let (terminal_resize_tx, terminal_resize_rx) = mpsc::channel::<Size>();
@@ -853,7 +937,11 @@ fn spawn_terminal_for_workspace(
       if is_active_for_output.load(Ordering::Relaxed) {
         let _ = window_terminal_output.emit(
           "output",
-          serde_json::json!({ "workspaceId": ws_for_output, "data": message }),
+          serde_json::json!({
+            "workspaceId": ws_for_output,
+            "terminalId": term_for_output,
+            "data": message,
+          }),
         );
       }
     }
@@ -865,7 +953,11 @@ fn spawn_terminal_for_workspace(
       if is_active_for_resize.load(Ordering::Relaxed) {
         let _ = window_terminal_resize.emit(
           "sendResizedToTerminal",
-          serde_json::json!({ "workspaceId": ws_for_resize, "size": message }),
+          serde_json::json!({
+            "workspaceId": ws_for_resize,
+            "terminalId": term_for_resize,
+            "size": message,
+          }),
         );
       }
     }

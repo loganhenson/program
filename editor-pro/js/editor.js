@@ -33,8 +33,9 @@ export default {
     activeFile: null,
     // Active context updated by Elm via setActiveContext port — JS uses it
     // to stamp outgoing events (save, run, resize, createFile) with the
-    // right workspaceId/file when the user has multiple project tabs open.
-    activeContext: { workspaceId: null, activeFile: null },
+    // right workspaceId / activeFile / terminalId when the user has multiple
+    // project tabs and multiple terminal tabs open.
+    activeContext: { workspaceId: null, activeFile: null, terminalId: null },
     saved: true,
     diagnostics: {},
     fuzzyFinder: null,
@@ -229,6 +230,16 @@ export default {
       emit('closeWorkspace', { workspaceId })
     })
 
+    window.vide.ports.requestOpenTerminal.subscribe((payload) => {
+      // payload = { workspaceId, terminalId }
+      emit('openTerminal', payload)
+    })
+
+    window.vide.ports.requestCloseTerminal.subscribe((payload) => {
+      // payload = { workspaceId, terminalId }
+      emit('closeTerminal', payload)
+    })
+
     window.vide.ports.requestRefreshDirectory.subscribe((directory) => {
       // no-op
     })
@@ -284,6 +295,7 @@ export default {
     window.vide.ports.requestRunTerminal.subscribe(({ contents }) => {
       this.handlers.requestRunTerminal({
         workspaceId: this.data.activeContext.workspaceId,
+        terminalId: this.data.activeContext.terminalId,
         contents,
       })
     })
@@ -291,6 +303,7 @@ export default {
     window.vide.ports.requestPasteTerminal.subscribe(async () => {
       this.handlers.requestRunTerminal({
         workspaceId: this.data.activeContext.workspaceId,
+        terminalId: this.data.activeContext.terminalId,
         contents: await readText(),
       })
     })
@@ -317,6 +330,7 @@ export default {
           prevHeightIncrement = nextHeightIncrement
           this.handlers.requestResizeTerminal({
             workspaceId: this.data.activeContext.workspaceId,
+            terminalId: this.data.activeContext.terminalId,
             width: w,
             height: h,
           })

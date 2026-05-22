@@ -37,9 +37,9 @@ import Workspace.Lib as WL
 import Workspace.Types exposing (Workspace)
 
 
-{-| Push the active workspace's identity + active file to JS so its
-event emitters (save, run, resize, createFile) can stamp outgoing
-events with the right workspaceId.
+{-| Push the active workspace's identity + active file + active terminal
+to JS so its event emitters (save, run, resize, createFile) can stamp
+outgoing events with the right workspaceId/terminalId.
 -}
 emitActiveContext : Model -> Cmd Msg
 emitActiveContext model =
@@ -47,6 +47,11 @@ emitActiveContext model =
         encoded =
             case WL.active model of
                 Just ws ->
+                    let
+                        activeTermId =
+                            List.Extra.getAt ws.activeTerminalIndex ws.terminals
+                                |> Maybe.map .id
+                    in
                     Json.Encode.object
                         [ ( "workspaceId", Json.Encode.string ws.projectPath )
                         , ( "activeFile"
@@ -57,15 +62,71 @@ emitActiveContext model =
                                 Nothing ->
                                     Json.Encode.null
                           )
+                        , ( "terminalId"
+                          , case activeTermId of
+                                Just t ->
+                                    Json.Encode.string t
+
+                                Nothing ->
+                                    Json.Encode.null
+                          )
                         ]
 
                 Nothing ->
                     Json.Encode.object
                         [ ( "workspaceId", Json.Encode.null )
                         , ( "activeFile", Json.Encode.null )
+                        , ( "terminalId", Json.Encode.null )
                         ]
     in
     Ports.setActiveContext encoded
+
+
+{-| Opens a new terminal in the given workspace. Generates a fresh
+workspace-scoped terminalId, initialises an Elm-side Terminal model,
+appends it to that workspace's terminals list, and asks Rust to spawn
+the corresponding PTY.
+-}
+openTerminalInWorkspace : String -> Model -> ( Model, Cmd Msg )
+openTerminalInWorkspace workspaceId model =
+    case WL.findByPath workspaceId model of
+        Nothing ->
+            ( model, Cmd.none )
+
+        Just ws ->
+            let
+                newId =
+                    "term-" ++ String.fromInt ws.terminalCounter
+
+                newTerminalModel =
+                    Terminal.init ws.projectPath PortHandlers.editorPorts (PortHandlers.terminalPorts ws.projectPath)
+
+                newTab =
+                    { id = newId, terminal = newTerminalModel, closeArmed = False }
+
+                nextWs =
+                    { ws
+                        | terminals = ws.terminals ++ [ newTab ]
+                        , activeTerminalIndex = List.length ws.terminals
+                        , terminalCounter = ws.terminalCounter + 1
+                    }
+
+                nextModel =
+                    WL.mapWorkspaceByPath workspaceId (always nextWs) model
+
+                openPayload =
+                    Json.Encode.object
+                        [ ( "workspaceId", Json.Encode.string workspaceId )
+                        , ( "terminalId", Json.Encode.string newId )
+                        ]
+            in
+            ( nextModel
+            , Cmd.batch
+                [ Ports.requestOpenTerminal openPayload
+                , Ports.requestSetupTerminalResizeObserver ()
+                , emitActiveContext nextModel
+                ]
+            )
 
 
 type alias Flags =
@@ -202,38 +263,49 @@ update msg model_ =
             )
 
         TerminalMsg terminalMsg ->
-            -- Legacy in-Elm TerminalMsg (synchronous internal terminal lib
-            -- callbacks like keybindings) — applies to the active workspace
-            -- since that's the only one receiving input.
-            case WL.active model |> Maybe.andThen .terminal of
+            -- Legacy in-Elm TerminalMsg (e.g., keybindings handing input
+            -- to the focused terminal). Applies to the active terminal of
+            -- the active workspace since that's the only one receiving
+            -- direct input.
+            case WL.active model of
                 Nothing ->
                     ( model, Cmd.none )
 
-                Just t ->
-                    let
-                        ( nextTerminal, terminalMsgs ) =
-                            Terminal.update terminalMsg t
-                    in
-                    ( WL.mapActive (\w -> { w | terminal = Just nextTerminal }) model
-                    , Cmd.map TerminalMsg terminalMsgs
-                    )
+                Just ws ->
+                    case List.Extra.getAt ws.activeTerminalIndex ws.terminals of
+                        Nothing ->
+                            ( model, Cmd.none )
 
-        TerminalMsgFor workspaceId terminalMsg ->
+                        Just tab ->
+                            let
+                                ( nextTerminal, terminalMsgs ) =
+                                    Terminal.update terminalMsg tab.terminal
+                            in
+                            ( WL.mapTerminalInWorkspace ws.projectPath tab.id (\t -> { t | terminal = nextTerminal }) model
+                            , Cmd.map TerminalMsg terminalMsgs
+                            )
+
+        TerminalMsgFor workspaceId terminalId terminalMsg ->
             -- Routed terminal event from Rust (output / sendResizedToTerminal).
-            -- Routes to that workspace's terminal regardless of active tab,
-            -- so background project terminals keep their state current.
-            case WL.findByPath workspaceId model |> Maybe.andThen .terminal of
+            -- Routes to that workspace's specific terminal regardless of
+            -- which tab is active — background terminals keep updating.
+            case WL.findByPath workspaceId model of
                 Nothing ->
                     ( model, Cmd.none )
 
-                Just t ->
-                    let
-                        ( nextTerminal, terminalMsgs ) =
-                            Terminal.update terminalMsg t
-                    in
-                    ( WL.mapWorkspaceByPath workspaceId (\w -> { w | terminal = Just nextTerminal }) model
-                    , Cmd.map (TerminalMsgFor workspaceId) terminalMsgs
-                    )
+                Just ws ->
+                    case List.Extra.find (\tt -> tt.id == terminalId) ws.terminals of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just tab ->
+                            let
+                                ( nextTerminal, terminalMsgs ) =
+                                    Terminal.update terminalMsg tab.terminal
+                            in
+                            ( WL.mapTerminalInWorkspace workspaceId terminalId (\t -> { t | terminal = nextTerminal }) model
+                            , Cmd.map (TerminalMsgFor workspaceId terminalId) terminalMsgs
+                            )
 
         NoOp ->
             ( model, Cmd.none )
@@ -250,13 +322,113 @@ update msg model_ =
 
                     else
                         let
+                            wasNew =
+                                WL.findByPath workspaceId model == Nothing
+
                             nextModel =
                                 WL.addOrFocus workspaceId model
                         in
-                        ( nextModel, emitActiveContext nextModel )
+                        if wasNew then
+                            -- Auto-open the workspace's first terminal so
+                            -- the user has a shell immediately. Subsequent
+                            -- terminals come via the + button on the
+                            -- terminal-tab strip.
+                            let
+                                ( withTerm, openCmd ) =
+                                    openTerminalInWorkspace workspaceId nextModel
+                            in
+                            ( withTerm
+                            , Cmd.batch [ emitActiveContext withTerm, openCmd ]
+                            )
+
+                        else
+                            ( nextModel, emitActiveContext nextModel )
 
                 Err _ ->
                     ( model, Cmd.none )
+
+        OpenTerminal ->
+            case WL.active model of
+                Just ws ->
+                    openTerminalInWorkspace ws.projectPath model
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        SelectTerminal idx ->
+            case WL.active model of
+                Nothing ->
+                    ( model, Cmd.none )
+
+                Just ws ->
+                    if idx == ws.activeTerminalIndex then
+                        ( disarmTerminalCloses model, Cmd.none )
+
+                    else
+                        let
+                            nextModel =
+                                WL.mapActive
+                                    (\w -> { w | activeTerminalIndex = idx, focused = Terminal })
+                                    model
+                                    |> disarmTerminalCloses
+                        in
+                        ( nextModel, emitActiveContext nextModel )
+
+        CloseTerminalRequested idx ->
+            ( armTerminalCloseAt idx model
+            , Process.sleep 3000 |> Task.perform (\_ -> DisarmCloseTick)
+            )
+
+        CloseTerminalConfirmed idx ->
+            case WL.active model of
+                Nothing ->
+                    ( model, Cmd.none )
+
+                Just ws ->
+                    case List.Extra.getAt idx ws.terminals of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just closingTab ->
+                            let
+                                remainingTerms =
+                                    List.Extra.removeAt idx ws.terminals
+
+                                nextActiveTermIdx =
+                                    if List.isEmpty remainingTerms then
+                                        0
+
+                                    else if idx < ws.activeTerminalIndex then
+                                        ws.activeTerminalIndex - 1
+
+                                    else if idx == ws.activeTerminalIndex then
+                                        min ws.activeTerminalIndex (List.length remainingTerms - 1)
+
+                                    else
+                                        ws.activeTerminalIndex
+
+                                nextWs =
+                                    { ws
+                                        | terminals = remainingTerms
+                                        , activeTerminalIndex = max 0 nextActiveTermIdx
+                                    }
+
+                                nextModel =
+                                    WL.mapActive (always nextWs) model
+                                        |> disarmTerminalCloses
+
+                                closePayload =
+                                    Json.Encode.object
+                                        [ ( "workspaceId", Json.Encode.string ws.projectPath )
+                                        , ( "terminalId", Json.Encode.string closingTab.id )
+                                        ]
+                            in
+                            ( nextModel
+                            , Cmd.batch
+                                [ Ports.requestCloseTerminal closePayload
+                                , emitActiveContext nextModel
+                                ]
+                            )
 
         ReceivedVideError json ->
             case decodeValue decodeVideError json of
@@ -600,7 +772,49 @@ disarmAllCloses : Model -> Model
 disarmAllCloses model =
     { model
         | workspaces =
-            List.map (\ws -> { ws | closeArmed = False }) model.workspaces
+            List.map
+                (\ws ->
+                    { ws
+                        | closeArmed = False
+                        , terminals = List.map (\t -> { t | closeArmed = False }) ws.terminals
+                    }
+                )
+                model.workspaces
+    }
+
+
+{-| Flip `closeArmed = True` on the terminal at `idx` of the active
+workspace; disarm everything else.
+-}
+armTerminalCloseAt : Int -> Model -> Model
+armTerminalCloseAt idx model =
+    let
+        clearedProjectArm =
+            disarmAllCloses model
+    in
+    WL.mapActive
+        (\w ->
+            { w
+                | terminals =
+                    List.indexedMap
+                        (\i tt ->
+                            { tt | closeArmed = i == idx }
+                        )
+                        w.terminals
+            }
+        )
+        clearedProjectArm
+
+
+disarmTerminalCloses : Model -> Model
+disarmTerminalCloses model =
+    { model
+        | workspaces =
+            List.map
+                (\ws ->
+                    { ws | terminals = List.map (\tt -> { tt | closeArmed = False }) ws.terminals }
+                )
+                model.workspaces
     }
 
 
@@ -631,16 +845,15 @@ fileTreeSubscriptions =
 
 terminalSubscriptions : Sub Msg
 terminalSubscriptions =
-    -- Always subscribed regardless of active workspace — output and resize
-    -- events can arrive for any open workspace (background terminals
-    -- continue running while their tabs are inactive). The decoders pull
-    -- the workspaceId out so we can route to the right workspace's model.
+    -- Output and resize events from Rust carry both workspaceId and
+    -- terminalId so we can route to the specific terminal model
+    -- regardless of which project / which terminal-tab is active.
     Sub.batch
         [ Ports.receiveTerminalOutput
             (\envelope ->
                 case decodeTerminalEnvelope (Json.Decode.field "data" Json.Decode.value) envelope of
-                    Ok ( wsId, data ) ->
-                        TerminalMsgFor wsId (Terminal.Types.ReceivedTerminalOutput data)
+                    Ok ( wsId, termId, data ) ->
+                        TerminalMsgFor wsId termId (Terminal.Types.ReceivedTerminalOutput data)
 
                     Err _ ->
                         NoOp
@@ -648,8 +861,8 @@ terminalSubscriptions =
         , Ports.receiveTerminalResized
             (\envelope ->
                 case decodeTerminalEnvelope (Json.Decode.field "size" Json.Decode.value) envelope of
-                    Ok ( wsId, size ) ->
-                        TerminalMsgFor wsId (Terminal.Types.ReceivedTerminalResized size)
+                    Ok ( wsId, termId, size ) ->
+                        TerminalMsgFor wsId termId (Terminal.Types.ReceivedTerminalResized size)
 
                     Err _ ->
                         NoOp
@@ -657,11 +870,12 @@ terminalSubscriptions =
         ]
 
 
-decodeTerminalEnvelope : Json.Decode.Decoder a -> Json.Decode.Value -> Result Json.Decode.Error ( String, a )
+decodeTerminalEnvelope : Json.Decode.Decoder a -> Json.Decode.Value -> Result Json.Decode.Error ( String, String, a )
 decodeTerminalEnvelope innerDecoder envelope =
     Json.Decode.decodeValue
-        (Json.Decode.map2 Tuple.pair
+        (Json.Decode.map3 (\wsId termId inner -> ( wsId, termId, inner ))
             (Json.Decode.field "workspaceId" Json.Decode.string)
+            (Json.Decode.field "terminalId" Json.Decode.string)
             innerDecoder
         )
         envelope
@@ -783,15 +997,13 @@ view model =
         [ case ( WL.active model, List.isEmpty model.workspaces ) of
             ( Just ws, _ ) ->
                 div [ class "flex flex-col w-full h-full" ]
-                    [ Tabs.Tabs.view { workspaces = model.workspaces, activeIndex = model.activeIndex }
+                    [ projectTabBar model
                     , viewWorkspace ws model.recentProjects
                     ]
 
             ( Nothing, False ) ->
-                -- Workspaces exist but activeIndex is out of bounds — render
-                -- the tab strip alone so the user can pick one.
                 div [ class "flex flex-col w-full h-full" ]
-                    [ Tabs.Tabs.view { workspaces = model.workspaces, activeIndex = model.activeIndex }
+                    [ projectTabBar model
                     , viewWelcomeOnly model.recentProjects
                     ]
 
@@ -799,6 +1011,52 @@ view model =
                 viewWelcomeOnly model.recentProjects
         , viewNotifications model.notifications
         ]
+
+
+projectTabBar : Model -> Html.Html Msg
+projectTabBar model =
+    let
+        items =
+            List.map
+                (\ws ->
+                    { label = basename ws.projectPath
+                    , tooltip = Just ws.projectPath
+                    , closeArmed = ws.closeArmed
+                    }
+                )
+                model.workspaces
+    in
+    Tabs.Tabs.view
+        { tabs = items
+        , activeIndex = model.activeIndex
+        , onSelect = SelectTab
+        , onClose = CloseRequested
+        , onConfirmClose = CloseConfirmed
+        , onAdd = AddTabRequested
+        , addTooltip = "Open another project"
+        }
+
+
+basename : String -> String
+basename path =
+    let
+        trimmed =
+            if String.endsWith "/" path then
+                String.dropRight 1 path
+
+            else
+                path
+    in
+    case List.reverse (String.split "/" trimmed) of
+        last :: _ ->
+            if String.isEmpty last then
+                trimmed
+
+            else
+                last
+
+        [] ->
+            trimmed
 
 
 viewWelcomeOnly : List String -> Html.Html Msg
@@ -850,7 +1108,7 @@ viewWorkspace ws recentProjects =
             ]
         , case ws.terminalShowing of
             True ->
-                viewTerminal ws.terminal ws.focused
+                viewTerminalPane ws
 
             False ->
                 text ""
@@ -858,31 +1116,60 @@ viewWorkspace ws recentProjects =
         ]
 
 
-viewTerminal : Maybe Terminal.Types.Model -> Focused -> Html.Html Msg
-viewTerminal maybeTerminal focused =
-    case maybeTerminal of
-        Just terminal ->
+viewTerminalPane : Workspace -> Html.Html Msg
+viewTerminalPane ws =
+    case List.Extra.getAt ws.activeTerminalIndex ws.terminals of
+        Nothing ->
+            text ""
+
+        Just activeTab ->
             div
                 [ style "height" "30%"
-                , style "overflow-y" "scroll"
-                , style "overflow-x" "hidden"
+                , style "display" "flex"
+                , style "flex-direction" "column"
                 , style "background" "#262626"
                 , style "border-bottom-left-radius" "12px"
                 , style "border-bottom-right-radius" "12px"
                 , classList
-                    [ ( "border-blue-400", focused == Terminal )
-                    , ( "border-lightgray-transparent", focused /= Terminal )
+                    [ ( "border-blue-400", ws.focused == Terminal )
+                    , ( "border-lightgray-transparent", ws.focused /= Terminal )
                     ]
-                , class "border w-full h-full"
+                , class "border w-full"
                 ]
-                [ div
-                    [ onClick FocusTerminal
+                [ terminalTabBar ws
+                , div
+                    [ style "flex" "1 1 auto"
+                    , style "min-height" "0"
+                    , style "overflow-y" "scroll"
+                    , style "overflow-x" "hidden"
+                    , onClick FocusTerminal
                     ]
-                    [ Html.map TerminalMsg <| Terminal.view terminal ]
+                    [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
                 ]
 
-        Nothing ->
-            text ""
+
+terminalTabBar : Workspace -> Html.Html Msg
+terminalTabBar ws =
+    let
+        items =
+            List.indexedMap
+                (\i tt ->
+                    { label = "Terminal " ++ String.fromInt (i + 1)
+                    , tooltip = Just tt.id
+                    , closeArmed = tt.closeArmed
+                    }
+                )
+                ws.terminals
+    in
+    Tabs.Tabs.view
+        { tabs = items
+        , activeIndex = ws.activeTerminalIndex
+        , onSelect = SelectTerminal
+        , onClose = CloseTerminalRequested
+        , onConfirmClose = CloseTerminalConfirmed
+        , onAdd = OpenTerminal
+        , addTooltip = "Open another terminal in this project"
+        }
 
 
 viewNotifications : List ( Int, Notification.Types.Notification ) -> Html.Html Msg
@@ -1037,9 +1324,10 @@ updateWorkspaceFileTree : FileTree.Types.FileTreeAndFlat -> Workspace -> Workspa
 updateWorkspaceFileTree treeAndFlat ws =
     case ws.fileTree of
         Nothing ->
+            -- Terminals are created lazily via openTerminalInWorkspace
+            -- (triggered by WorkspaceInitialized), not here.
             { ws
                 | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
-                , terminal = Just (Terminal.init treeAndFlat.tree.path PortHandlers.editorPorts (PortHandlers.terminalPorts treeAndFlat.tree.path))
                 , fileTreeShowing = True
                 , terminalShowing = True
             }
