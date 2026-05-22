@@ -201,6 +201,10 @@ export default {
       window.vide.ports.receiveFuzzyFindResults.send(event.payload)
     })
 
+    listen('notification', (event) => {
+      this.receiveNotification(event.payload)
+    })
+
 
     /**
      * Elm initialization
