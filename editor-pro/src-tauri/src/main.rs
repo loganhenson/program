@@ -62,6 +62,49 @@ fn get_recent_projects(recents: tauri::State<'_, SharedRecents>) -> Vec<String> 
   recents.lock().unwrap().prune_missing()
 }
 
+/// Refuse to read files larger than this — they freeze JSON serialization
+/// and the Elm renderer. Most code files are well under 1 MB; this leaves
+/// plenty of headroom for generated artifacts users sometimes inspect.
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+fn emit_notification(window: &WebviewWindow<Wry>, type_: &str, message: String) {
+  let payload = serde_json::json!({
+    "source": "Editor",
+    "type": type_,
+    "message": message,
+  });
+  if let Err(e) = window.emit("notification", payload) {
+    eprintln!("failed to emit notification: {:?}", e);
+  }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LoadDecision {
+  Ok(String),
+  TooLarge { size: u64, limit: u64 },
+  NotAFile,
+  StatError(String),
+  ReadError(String),
+}
+
+fn load_file_with_cap(path: &str, limit: u64) -> LoadDecision {
+  let meta = match metadata(path) {
+    Ok(m) => m,
+    Err(e) => return LoadDecision::StatError(e.to_string()),
+  };
+  if !meta.is_file() {
+    return LoadDecision::NotAFile;
+  }
+  let size = meta.len();
+  if size > limit {
+    return LoadDecision::TooLarge { size, limit };
+  }
+  match fs::read_to_string(path) {
+    Ok(c) => LoadDecision::Ok(c),
+    Err(e) => LoadDecision::ReadError(e.to_string()),
+  }
+}
+
 fn fd_probe() -> ProbeOutcome {
   preflight::probe_binary("fd")
 }
@@ -272,19 +315,41 @@ fn bootstrap(
 
   window.listen("activateFileOrDirectory", move |event| {
     let filename: String = serde_json::from_str(event.payload()).unwrap();
-    if metadata(&filename).unwrap().is_file() {
-      let contents =
-        fs::read_to_string(&filename).expect("Something went wrong reading the file");
-
-      window_receive_activated_file
-        .emit(
-          "receiveActivatedFile",
-          File {
-            path: filename,
-            contents,
-          },
-        )
-        .expect("failed to emit receiveActivatedFile")
+    match load_file_with_cap(&filename, MAX_FILE_BYTES) {
+      LoadDecision::Ok(contents) => {
+        window_receive_activated_file
+          .emit(
+            "receiveActivatedFile",
+            File {
+              path: filename,
+              contents,
+            },
+          )
+          .expect("failed to emit receiveActivatedFile")
+      }
+      LoadDecision::NotAFile => {
+        // Directory or special file — nothing to load, no notification needed.
+      }
+      LoadDecision::TooLarge { size, limit } => emit_notification(
+        &window_receive_activated_file,
+        "error",
+        format!(
+          "{} is {:.1} MB; the editor refuses files larger than {} MB to avoid hanging.",
+          filename,
+          size as f64 / 1_048_576.0,
+          limit / 1_048_576,
+        ),
+      ),
+      LoadDecision::StatError(e) => emit_notification(
+        &window_receive_activated_file,
+        "error",
+        format!("Could not stat {}: {}", filename, e),
+      ),
+      LoadDecision::ReadError(e) => emit_notification(
+        &window_receive_activated_file,
+        "error",
+        format!("Could not read {} (likely non-UTF-8 or binary): {}", filename, e),
+      ),
     }
   });
 
@@ -538,6 +603,42 @@ mod tests {
     };
     let resolved = derive_resolved_tools(&report);
     assert_eq!(resolved.fd.as_deref(), Some("/opt/homebrew/bin/fd"));
+  }
+
+  #[test]
+  fn load_file_with_cap_returns_ok_for_small_file() {
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-ok-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, b"hello").unwrap();
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024);
+    assert_eq!(result, LoadDecision::Ok("hello".to_string()));
+    let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[test]
+  fn load_file_with_cap_rejects_oversize() {
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-big-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, vec![b'a'; 2048]).unwrap();
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024);
+    assert!(matches!(result, LoadDecision::TooLarge { size: 2048, limit: 1024 }));
+    let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[test]
+  fn load_file_with_cap_returns_not_a_file_for_directory() {
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-dir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024);
+    assert_eq!(result, LoadDecision::NotAFile);
+    let _ = std::fs::remove_dir_all(&tmp);
+  }
+
+  #[test]
+  fn load_file_with_cap_returns_stat_error_for_missing_path() {
+    let result = load_file_with_cap("/nope/this/does/not/exist/xyzzy", 1024);
+    assert!(matches!(result, LoadDecision::StatError(_)));
   }
 
   #[test]

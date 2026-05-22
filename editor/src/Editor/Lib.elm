@@ -26,6 +26,16 @@ makeNewTravelable contents =
     }
 
 
+{-| Hard cap on how many undo snapshots we keep per file. Each Travelable
+holds the full RenderableLine list, so an unbounded history can grow
+the model arbitrarily large during a long editing session. Oldest
+entries (tail of the list) are dropped when we exceed this.
+-}
+maxUndoHistory : Int
+maxUndoHistory =
+    200
+
+
 snapshotTravelableHistory : Model -> Model
 snapshotTravelableHistory model =
     let
@@ -40,10 +50,14 @@ snapshotTravelableHistory model =
                             let
                                 ( head, tail ) =
                                     List.Extra.splitAt index history
+
+                                capped =
+                                    List.concat [ head, [ model.travelable ], tail ]
+                                        |> List.take maxUndoHistory
                             in
                             Dict.update
                                 model.file
-                                (always (Just ( index, List.concat [ head, [ model.travelable ], tail ] )))
+                                (always (Just ( index, capped )))
                                 model.histories
 
                 Nothing ->
@@ -496,8 +510,12 @@ updateEditor model ( nextModel, msg ) =
                     let
                         ( head, tail ) =
                             List.Extra.splitAt nextHistoryIndex nextHistory
+
+                        capped =
+                            List.concat [ head, [ nextTravelable ], tail ]
+                                |> List.take maxUndoHistory
                     in
-                    Just ( nextHistoryIndex, List.concat [ head, [ nextTravelable ], tail ] )
+                    Just ( nextHistoryIndex, capped )
 
                 ( False, Just ( nextHistoryIndex, nextHistory ) ) ->
                     Just ( nextHistoryIndex, nextHistory )

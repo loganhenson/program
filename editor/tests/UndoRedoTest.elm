@@ -1,8 +1,9 @@
 module UndoRedoTest exposing (..)
 
+import Dict
 import Editor
 import Editor.Keys exposing (update)
-import Editor.Lib exposing (renderableLinesToContents)
+import Editor.Lib exposing (maxUndoHistory, renderableLinesToContents)
 import Editor.Msg exposing (Mode(..))
 import Editor.RawKeyboard exposing (Msg(..), RawKey)
 import Expect exposing (Expectation)
@@ -209,4 +210,19 @@ suite =
                 afterU.travelable.renderableLines
                     |> renderableLinesToContents
                     |> Expect.notEqual "abc"
+        , test "undo history is capped at maxUndoHistory entries (oldest dropped)" <|
+            \_ ->
+                let
+                    target =
+                        maxUndoHistory + 20
+
+                    edited =
+                        List.foldl (\_ m -> recordEdit m) (normalModel "abc") (List.repeat target ())
+
+                    historyLength =
+                        Dict.get edited.file edited.histories
+                            |> Maybe.map (\( _, h ) -> List.length h)
+                            |> Maybe.withDefault 0
+                in
+                Expect.equal historyLength maxUndoHistory
         ]
