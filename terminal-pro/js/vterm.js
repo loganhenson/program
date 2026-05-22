@@ -117,8 +117,12 @@ module.exports = {
           return
         }
 
+        // Subtract a row of slack — the macOS window's rounded bottom
+        // corners clip a few pixels of whatever the last row would have
+        // landed on, so we leave one row of breathing room to guarantee
+        // the prompt is never hidden under the curve.
         let w = Math.floor(terminals[0].contentRect.width / 8.4)
-        let h = Math.floor(terminals[0].contentRect.height / 24)
+        let h = Math.max(1, Math.floor(terminals[0].contentRect.height / 24) - 1)
         let nextWidthIncrement = Math.floor(w * 8.4);
         let nextHeightIncrement = Math.floor(h * 24);
 
@@ -133,13 +137,14 @@ module.exports = {
         }
       }))
 
-      // Re-observe whenever the DOM element changes (e.g., on tab switch
-      // the active terminal's div re-renders). Polling is overkill — the
-      // #terminal element is stable across tab switches because Elm just
-      // swaps its inner content.
+      // Observe #terminal-container, NOT #terminal. #terminal's height is
+      // content-driven (grows with rendered rows), so observing it creates
+      // a self-reinforcing PTY size that ignores the actual visible area —
+      // the last rows end up below the window fold. #terminal-container
+      // has h-full (= viewport), so its content rect is the real viewport.
       let interval = setInterval(() => {
-        if (document.querySelector('#terminal')) {
-          terminalResizeObserver.observe(document.querySelector('#terminal'))
+        if (document.querySelector('#terminal-container')) {
+          terminalResizeObserver.observe(document.querySelector('#terminal-container'))
           clearInterval(interval)
         }
       }, 200)

@@ -320,8 +320,12 @@ export default {
           return
         }
 
+        // Subtract one row of slack — the macOS window's rounded bottom
+        // corners clip a few pixels of whatever the last row would land
+        // on, so we leave one row of breathing room to guarantee the
+        // prompt is never hidden under the curve.
         let w = Math.floor(terminals[0].contentRect.width / 8.4)
-        let h = Math.floor(terminals[0].contentRect.height / 24)
+        let h = Math.max(1, Math.floor(terminals[0].contentRect.height / 24) - 1)
         let nextWidthIncrement = Math.floor(w * 8.4);
         let nextHeightIncrement = Math.floor(h * 24);
 
@@ -337,9 +341,14 @@ export default {
         }
       }))
 
+      // Observe #terminal-container, NOT #terminal. #terminal's height is
+      // content-driven, so observing it creates a self-reinforcing PTY
+      // size that ignores the actual viewport — the last rows end up
+      // below the window fold. #terminal-container has h-full, so its
+      // content rect is the real viewport.
       let interval = setInterval(() => {
-        if (document.querySelector('#terminal')) {
-          terminalResizeObserver.observe(document.querySelector('#terminal'))
+        if (document.querySelector('#terminal-container')) {
+          terminalResizeObserver.observe(document.querySelector('#terminal-container'))
           clearInterval(interval)
         }
       }, 200)
