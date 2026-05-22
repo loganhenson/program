@@ -13,21 +13,35 @@ import Task
 import Terminal.Input
 import Terminal.Keybindings
 import Types exposing (Focused(..))
+import Workspace.Lib as WL
+import Workspace.Types exposing (Workspace)
 
 
 handleKeybindings : Model -> RawKeyboard.Msg -> ( Model, Cmd Msg )
 handleKeybindings model msg =
+    case WL.active model of
+        Nothing ->
+            ( model, Cmd.none )
+
+        Just ws ->
+            handleKeybindingsForWorkspace model ws msg
+
+
+handleKeybindingsForWorkspace : Model -> Workspace -> RawKeyboard.Msg -> ( Model, Cmd Msg )
+handleKeybindingsForWorkspace model ws msg =
     case msg of
         RawKeyboard.Up key ->
-            case model.focused of
+            case ws.focused of
                 FileTree ->
-                    case model.fileTree of
+                    case ws.fileTree of
                         Just fileTree ->
                             let
                                 ( nextFileTree, msgs ) =
                                     FileTree.Keybindings.handleKeyUp key fileTree
                             in
-                            ( { model | fileTree = Just nextFileTree }, Cmd.map FileTreeMsg msgs )
+                            ( WL.mapActive (\w -> { w | fileTree = Just nextFileTree }) model
+                            , Cmd.map FileTreeMsg msgs
+                            )
 
                         Nothing ->
                             ( model, Cmd.none )
@@ -38,48 +52,55 @@ handleKeybindings model msg =
         RawKeyboard.Down key ->
             -- High level focused element swaps
             if key.metaKey && key.code == "Digit1" then
-                ( { model
-                    | focused =
-                        case model.focused of
-                            FileTree ->
-                                Editor
+                ( WL.mapActive
+                    (\w ->
+                        { w
+                            | focused =
+                                case w.focused of
+                                    FileTree ->
+                                        Editor
 
-                            _ ->
-                                FileTree
-                    , fileTreeShowing =
-                        case model.focused of
-                            FileTree ->
-                                False
+                                    _ ->
+                                        FileTree
+                            , fileTreeShowing =
+                                case w.focused of
+                                    FileTree ->
+                                        False
 
-                            _ ->
-                                True
-                  }
+                                    _ ->
+                                        True
+                        }
+                    )
+                    model
                 , Cmd.none
                 )
 
             else if key.metaKey && key.code == "Digit2" then
-                ( { model
-                    | focused =
-                        case model.focused of
-                            Terminal ->
-                                Editor
+                ( WL.mapActive
+                    (\w ->
+                        { w
+                            | focused =
+                                case w.focused of
+                                    Terminal ->
+                                        Editor
 
-                            _ ->
-                                Terminal
-                    , terminalShowing =
-                        case model.focused of
-                            Terminal ->
-                                False
+                                    _ ->
+                                        Terminal
+                            , terminalShowing =
+                                case w.focused of
+                                    Terminal ->
+                                        False
 
-                            _ ->
-                                True
-                  }
+                                    _ ->
+                                        True
+                        }
+                    )
+                    model
                 , Cmd.none
                 )
 
             else if key.metaKey && key.code == "Digit3" then
-                ( { model | focused = Editor }, Cmd.none )
-                -- Global actions
+                ( WL.mapActive (\w -> { w | focused = Editor }) model, Cmd.none )
 
             else if
                 key.metaKey
@@ -87,63 +108,70 @@ handleKeybindings model msg =
                     && key.code
                     == "KeyO"
             then
-                ( { model | focused = FuzzyFinder }, Task.attempt FocusElementByIdResult (focus "vide-fuzzy-finder-input") )
-                -- Focus dependent actions
+                ( WL.mapActive (\w -> { w | focused = FuzzyFinder }) model
+                , Task.attempt FocusElementByIdResult (focus "vide-fuzzy-finder-input")
+                )
 
             else
-                case model.focused of
+                case ws.focused of
                     FileTree ->
-                        case model.fileTree of
+                        case ws.fileTree of
                             Just fileTree ->
                                 let
                                     ( nextFileTree, msgs ) =
                                         FileTree.Keybindings.handleKeybindings key fileTree
                                 in
-                                ( { model | fileTree = Just nextFileTree }, Cmd.map FileTreeMsg msgs )
+                                ( WL.mapActive (\w -> { w | fileTree = Just nextFileTree }) model
+                                , Cmd.map FileTreeMsg msgs
+                                )
 
                             Nothing ->
                                 ( model, Cmd.none )
 
                     FuzzyFinder ->
                         if key.code == "Escape" then
-                            ( { model
-                                | focused = Editor
-                              }
-                            , Cmd.none
-                            )
+                            ( WL.mapActive (\w -> { w | focused = Editor }) model, Cmd.none )
 
-                        else if key.code == "ArrowDown" && model.focused == FuzzyFinder then
-                            let
-                                fuzzyFinder =
-                                    model.fuzzyFinder
-                            in
-                            ( { model
-                                | fuzzyFinder =
-                                    { fuzzyFinder
-                                        | fuzzyFinderHighlightedIndex = min (List.length fuzzyFinder.fuzzyFindResults - 2) fuzzyFinder.fuzzyFinderHighlightedIndex + 1
+                        else if key.code == "ArrowDown" then
+                            ( WL.mapActive
+                                (\w ->
+                                    let
+                                        fuzzyFinder =
+                                            w.fuzzyFinder
+                                    in
+                                    { w
+                                        | fuzzyFinder =
+                                            { fuzzyFinder
+                                                | fuzzyFinderHighlightedIndex = min (List.length fuzzyFinder.fuzzyFindResults - 2) fuzzyFinder.fuzzyFinderHighlightedIndex + 1
+                                            }
                                     }
-                              }
+                                )
+                                model
                             , Cmd.none
                             )
 
                         else if key.code == "ArrowUp" then
-                            let
-                                fuzzyFinder =
-                                    model.fuzzyFinder
-                            in
-                            ( { model
-                                | fuzzyFinder =
-                                    { fuzzyFinder
-                                        | fuzzyFinderHighlightedIndex = max 1 fuzzyFinder.fuzzyFinderHighlightedIndex - 1
+                            ( WL.mapActive
+                                (\w ->
+                                    let
+                                        fuzzyFinder =
+                                            w.fuzzyFinder
+                                    in
+                                    { w
+                                        | fuzzyFinder =
+                                            { fuzzyFinder
+                                                | fuzzyFinderHighlightedIndex = max 1 fuzzyFinder.fuzzyFinderHighlightedIndex - 1
+                                            }
                                     }
-                              }
+                                )
+                                model
                             , Cmd.none
                             )
 
                         else if key.code == "Enter" then
-                            case Maybe.map (.fileTree >> .path) model.fileTree of
-                                Just projectPath ->
-                                    case List.Extra.getAt model.fuzzyFinder.fuzzyFinderHighlightedIndex model.fuzzyFinder.fuzzyFindResults of
+                            case Maybe.map (.fileTree >> .path) ws.fileTree of
+                                Just _ ->
+                                    case List.Extra.getAt ws.fuzzyFinder.fuzzyFinderHighlightedIndex ws.fuzzyFinder.fuzzyFindResults of
                                         Just path ->
                                             requestActivateFileOrDirectory model path True
 
@@ -151,7 +179,7 @@ handleKeybindings model msg =
                                             ( model, Cmd.none )
 
                                 Nothing ->
-                                    case List.Extra.getAt model.fuzzyFinder.fuzzyFinderHighlightedIndex model.fuzzyFinder.fuzzyFindResults of
+                                    case List.Extra.getAt ws.fuzzyFinder.fuzzyFinderHighlightedIndex ws.fuzzyFinder.fuzzyFindResults of
                                         Just directory ->
                                             Lib.requestOpenProject model directory
 
@@ -163,26 +191,28 @@ handleKeybindings model msg =
 
                     Terminal ->
                         --Generally handled by loganhenson/editor
-                        case model.terminal of
+                        case ws.terminal of
                             Just terminal ->
                                 let
                                     ( nextTerminal, msgs ) =
                                         Terminal.Keybindings.handleKeybindings key terminal
                                 in
-                                ( { model | terminal = Just nextTerminal }, Cmd.map TerminalMsg msgs )
+                                ( WL.mapActive (\w -> { w | terminal = Just nextTerminal }) model
+                                , Cmd.map TerminalMsg msgs
+                                )
 
                             Nothing ->
                                 ( model, Cmd.none )
 
                     Editor ->
                         if key.metaKey then
-                            case model.activeFile of
+                            case ws.activeFile of
                                 Just activeFile ->
                                     case key.code of
                                         "BracketLeft" ->
-                                            case List.Extra.findIndex (\( f, _ ) -> f == activeFile) model.fileHistory of
+                                            case List.Extra.findIndex (\( f, _ ) -> f == activeFile) ws.fileHistory of
                                                 Just index ->
-                                                    case List.Extra.getAt (index + 1) model.fileHistory of
+                                                    case List.Extra.getAt (index + 1) ws.fileHistory of
                                                         Just ( file, _ ) ->
                                                             requestActivateFileOrDirectory model file False
 
@@ -193,9 +223,9 @@ handleKeybindings model msg =
                                                     ( model, Cmd.none )
 
                                         "BracketRight" ->
-                                            case List.Extra.findIndex (\( f, _ ) -> f == activeFile) model.fileHistory of
+                                            case List.Extra.findIndex (\( f, _ ) -> f == activeFile) ws.fileHistory of
                                                 Just index ->
-                                                    case List.Extra.getAt (index - 1) model.fileHistory of
+                                                    case List.Extra.getAt (index - 1) ws.fileHistory of
                                                         Just ( file, _ ) ->
                                                             requestActivateFileOrDirectory model file False
 

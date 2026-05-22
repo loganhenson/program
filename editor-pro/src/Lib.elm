@@ -11,38 +11,47 @@ import Msg exposing (Msg(..))
 import Ports
 import Tuple exposing (first)
 import Types exposing (Focused(..))
+import Workspace.Lib as WL
+import Workspace.Types exposing (Workspace)
 
 
 handleFileTreeMsg : FileTree.Types.Msg -> Model -> ( Model, Cmd Msg )
 handleFileTreeMsg m model =
-    case model.fileTree of
+    case WL.active model of
         Nothing ->
             ( model, Cmd.none )
 
-        Just fileTree ->
-            let
-                ( nextFileTree, fileTreeMsgs ) =
-                    FileTree.FileTree.update m fileTree
+        Just ws ->
+            case ws.fileTree of
+                Nothing ->
+                    ( model, Cmd.none )
 
-                ( nextModel, editorMsgs ) =
-                    case m of
-                        FileTree.Types.ActivateFile path ->
-                            requestActivateFileOrDirectory model path True
+                Just fileTree ->
+                    let
+                        ( nextFileTree, fileTreeMsgs ) =
+                            FileTree.FileTree.update m fileTree
 
-                        _ ->
-                            ( model, Cmd.none )
-            in
-            ( { nextModel | fileTree = Just nextFileTree, focused = FileTree }
-            , Cmd.batch
-                [ Cmd.map FileTreeMsg fileTreeMsgs
-                , editorMsgs
-                ]
-            )
+                        ( afterActivate, editorMsgs ) =
+                            case m of
+                                FileTree.Types.ActivateFile path ->
+                                    requestActivateFileOrDirectory model path True
+
+                                _ ->
+                                    ( model, Cmd.none )
+                    in
+                    ( afterActivate
+                        |> WL.mapActive
+                            (\w -> { w | fileTree = Just nextFileTree, focused = FileTree })
+                    , Cmd.batch
+                        [ Cmd.map FileTreeMsg fileTreeMsgs
+                        , editorMsgs
+                        ]
+                    )
 
 
 handleEditorMsg : Editor.Msg.Msg -> Model -> ( Model, Cmd Msg )
 handleEditorMsg m model =
-    case model.editor of
+    case WL.active model |> Maybe.andThen .editor of
         Nothing ->
             ( model, Cmd.none )
 
@@ -51,7 +60,9 @@ handleEditorMsg m model =
                 ( editor, message ) =
                     Editor.update m prevEditor
             in
-            ( { model | editor = Just editor, fileTree = model.fileTree }, Cmd.map EditorMsg message )
+            ( WL.mapActive (\w -> { w | editor = Just editor }) model
+            , Cmd.map EditorMsg message
+            )
 
 
 {-| Hard cap on remembered file contents. Each entry holds a full file's
@@ -72,46 +83,62 @@ addToFileHistory fileHistory path contents =
 
 requestActivateFileOrDirectory : Model -> String -> Bool -> ( Model, Cmd Msg )
 requestActivateFileOrDirectory model path updateFileHistory =
-    -- First, update contents of active file (if there is one) in fileHistory
-    -- if the requested file is in fileHistory load it up via changeFile
-    -- if not, request it via port
+    case WL.active model of
+        Nothing ->
+            ( model, Cmd.none )
+
+        Just ws ->
+            let
+                ( nextWs, cmd ) =
+                    activateInWorkspace ws path updateFileHistory
+            in
+            ( WL.mapActive (always nextWs) model, cmd )
+
+
+activateInWorkspace : Workspace -> String -> Bool -> ( Workspace, Cmd Msg )
+activateInWorkspace ws path updateFileHistory =
     let
         maybeCurrentFileIndex =
-            case model.activeFile of
-                Just activeFile ->
-                    List.Extra.findIndex (first >> (==) activeFile) model.fileHistory
+            case ws.activeFile of
+                Just af ->
+                    List.Extra.findIndex (first >> (==) af) ws.fileHistory
 
                 Nothing ->
                     Nothing
 
         maybeNextFileIndex =
-            List.Extra.findIndex (first >> (==) path) model.fileHistory
+            List.Extra.findIndex (first >> (==) path) ws.fileHistory
 
         maybeNextFileAndContents =
-            maybeNextFileIndex |> Maybe.andThen (\i -> List.Extra.getAt i model.fileHistory)
+            maybeNextFileIndex |> Maybe.andThen (\i -> List.Extra.getAt i ws.fileHistory)
 
         nextFileHistory =
-            case ( maybeCurrentFileIndex, model.editor ) of
+            case ( maybeCurrentFileIndex, ws.editor ) of
                 ( Just index, Just justEditor ) ->
-                    List.Extra.updateAt index (\( curFile, _ ) -> ( curFile, Editor.Lib.renderableLinesToContents justEditor.travelable.renderableLines )) model.fileHistory
+                    List.Extra.updateAt index
+                        (\( curFile, _ ) ->
+                            ( curFile
+                            , Editor.Lib.renderableLinesToContents justEditor.travelable.renderableLines
+                            )
+                        )
+                        ws.fileHistory
 
                 _ ->
-                    model.fileHistory
+                    ws.fileHistory
 
         ( nextFileTree, fileTreeMsgs ) =
-            case model.fileTree of
+            case ws.fileTree of
                 Just fileTree ->
                     Tuple.mapFirst Just <| FileTree.FileTree.update (FileTree.Types.ActivateFile path) fileTree
 
                 Nothing ->
-                    ( model.fileTree, Cmd.none )
+                    ( ws.fileTree, Cmd.none )
 
-        nextModel =
-            let
-                fuzzyFinder =
-                    model.fuzzyFinder
-            in
-            { model
+        fuzzyFinder =
+            ws.fuzzyFinder
+
+        nextWs =
+            { ws
                 | focused = Editor
                 , fuzzyFinder = { fuzzyFinder | fuzzyFindResults = [] }
                 , fileHistory = nextFileHistory
@@ -120,13 +147,13 @@ requestActivateFileOrDirectory model path updateFileHistory =
     in
     case maybeNextFileAndContents of
         Just ( file, contents ) ->
-            case model.editor of
+            case ws.editor of
                 Just justEditor ->
                     let
                         ( nextEditor, editorMsgs ) =
                             Editor.Lib.changeFile justEditor file contents
                     in
-                    ( { nextModel
+                    ( { nextWs
                         | editor = Just nextEditor
                         , activeFile = Just file
                         , fileHistory =
@@ -141,10 +168,10 @@ requestActivateFileOrDirectory model path updateFileHistory =
                     )
 
                 Nothing ->
-                    ( nextModel, Cmd.none )
+                    ( nextWs, Cmd.none )
 
         Nothing ->
-            ( nextModel
+            ( nextWs
             , Cmd.batch
                 [ Ports.requestActivateFileOrDirectory path
                 , Cmd.map FileTreeMsg fileTreeMsgs
@@ -152,15 +179,14 @@ requestActivateFileOrDirectory model path updateFileHistory =
             )
 
 
+{-| Open a project directory. Add-or-focus semantics: if the path is
+already an open tab, switch to it; otherwise append a new tab and focus
+it. The Rust side is still single-workspace (full per-tab state
+preservation is the next PR) — switching tabs re-asks Rust to load that
+project, which restarts the terminal and refreshes the file tree.
+-}
 requestOpenProject : Model -> String -> ( Model, Cmd Msg )
 requestOpenProject model directory =
-    let
-        fuzzyFinder =
-            model.fuzzyFinder
-    in
-    ( { model
-        | fuzzyFinder = { fuzzyFinder | fuzzyFindResults = [], fuzzyFinderInputValue = "", fuzzyFinderHighlightedIndex = 0 }
-        , focused = FileTree
-      }
+    ( WL.addOrFocus directory model
     , Ports.requestOpenProject directory
     )
