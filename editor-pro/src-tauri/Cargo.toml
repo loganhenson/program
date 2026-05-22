@@ -1,6 +1,6 @@
 [package]
 name = "editor-pro"
-version = "0.3.1"
+version = "0.4.0"
 description = "EditorPro"
 authors = ["Logan Henson"]
 license = ""
