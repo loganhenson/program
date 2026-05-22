@@ -29,7 +29,11 @@ import Terminal
 import Terminal.Types
 import Time
 import Types exposing (Focused(..), VideErrorType(..))
+import Process
+import Tabs.Tabs
 import Welcome.Welcome
+import Workspace.Lib as WL
+import Workspace.Types exposing (Workspace)
 
 
 type alias Flags =
@@ -55,28 +59,30 @@ maxNotifications =
 init : Flags -> ( Model, Cmd Msg )
 init { activeFile, files } =
     let
-        maybeFileTree =
+        initialWorkspaces =
             case files of
                 Just justFiles ->
                     case decodeFiles justFiles of
                         Ok treeAndFlat ->
-                            Just (FileTree.FileTree.init treeAndFlat activeFile)
+                            let
+                                ws =
+                                    WL.empty treeAndFlat.tree.path
+                            in
+                            [ { ws
+                                | fileTree = Just (FileTree.FileTree.init treeAndFlat activeFile)
+                                , activeFile = activeFile
+                                , fileTreeShowing = True
+                              }
+                            ]
 
                         Err _ ->
-                            Nothing
+                            []
 
                 Nothing ->
-                    Nothing
+                    []
     in
-    ( { fileTree = maybeFileTree
-      , fileTreeShowing = False
-      , terminal = Nothing
-      , terminalShowing = True
-      , editor = Nothing
-      , fileHistory = []
-      , activeFile = activeFile
-      , focused = FileTree
-      , fuzzyFinder = FuzzyFinder.FuzzyFinder.init
+    ( { workspaces = initialWorkspaces
+      , activeIndex = 0
       , notifications = []
       , recentProjects = []
       }
@@ -92,60 +98,58 @@ init { activeFile, files } =
     )
 
 
-update : Msg -> Model.Model -> ( Model.Model, Cmd Msg )
-update msg model =
+{-| Keep each workspace's editor.active flag in sync with whether that
+workspace is the active one AND has the editor pane focused. Only the
+active workspace can ever have a focused editor.
+-}
+refreshEditorActiveFlags : Model -> Model
+refreshEditorActiveFlags model =
     let
-        -- Global changes go here
-        fuzzyFinder =
-            model.fuzzyFinder
+        focusEditor idx ws =
+            let
+                shouldBeActive =
+                    idx == model.activeIndex && ws.focused == Editor
+            in
+            { ws | editor = Maybe.map (\e -> { e | active = shouldBeActive }) ws.editor }
+    in
+    { model | workspaces = List.indexedMap focusEditor model.workspaces }
 
-        fileTree =
-            model.fileTree
 
-        editor =
-            model.editor
-
-        nextModel =
-            { model
-                | fuzzyFinder = fuzzyFinder
-                , fileTree = fileTree
-                , editor = Maybe.map (\v -> { v | active = model.focused == Editor }) editor
-            }
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg model_ =
+    let
+        model =
+            refreshEditorActiveFlags model_
     in
     case msg of
         RawKeyboardMsg m ->
-            handleKeybindings nextModel m
+            handleKeybindings model m
 
         DismissNotification notification ->
-            ( { nextModel | notifications = List.filter (\( _, n ) -> n /= notification) nextModel.notifications }, Cmd.none )
+            ( { model | notifications = List.filter (\( _, n ) -> n /= notification) model.notifications }
+            , Cmd.none
+            )
 
         ReceivedNotification json ->
             case decodeValue decodeNotification json of
                 Ok notification ->
-                    ( nextModel
-                    , Task.perform (NotificationReceivedAt notification) Time.now
-                    )
+                    ( model, Task.perform (NotificationReceivedAt notification) Time.now )
 
                 Err _ ->
-                    ( nextModel, Cmd.none )
+                    ( model, Cmd.none )
 
         NotificationReceivedAt notification now ->
-            -- Dedupe: if the same notification (source + type + message) is
-            -- already showing, drop the new one rather than stacking
-            -- duplicates. Catches double-emits (e.g., the file tree firing
-            -- activate twice on a too-large file) without us needing to
-            -- track down every upstream emitter.
-            if List.any (\( _, n ) -> n == notification) nextModel.notifications then
-                ( nextModel, Cmd.none )
+            if List.any (\( _, n ) -> n == notification) model.notifications then
+                ( model, Cmd.none )
 
             else
                 let
                     entry =
                         ( Time.posixToMillis now, notification )
                 in
-                ( { nextModel
+                ( { model
                     | notifications =
-                        (entry :: nextModel.notifications)
+                        (entry :: model.notifications)
                             |> List.take maxNotifications
                   }
                 , Cmd.none
@@ -156,17 +160,17 @@ update msg model =
                 nowMs =
                     Time.posixToMillis now
             in
-            ( { nextModel
+            ( { model
                 | notifications =
                     List.filter
                         (\( receivedAt, _ ) -> nowMs - receivedAt < notificationTtlMs)
-                        nextModel.notifications
+                        model.notifications
               }
             , Cmd.none
             )
 
         TerminalMsg terminalMsg ->
-            case model.terminal of
+            case WL.active model |> Maybe.andThen .terminal of
                 Nothing ->
                     ( model, Cmd.none )
 
@@ -175,202 +179,352 @@ update msg model =
                         ( nextTerminal, terminalMsgs ) =
                             Terminal.update terminalMsg t
                     in
-                    ( { nextModel | terminal = Just nextTerminal }, Cmd.map TerminalMsg terminalMsgs )
+                    ( WL.mapActive (\w -> { w | terminal = Just nextTerminal }) model
+                    , Cmd.map TerminalMsg terminalMsgs
+                    )
 
         ReceivedVideError json ->
             case decodeValue decodeVideError json of
                 Ok videError ->
                     case videError.type_ of
                         FileTreeError fileTreeError ->
-                            ( { nextModel
-                                | fileTree = Maybe.map (\v -> { v | error = Just fileTreeError }) fileTree
-                              }
+                            ( WL.mapActive
+                                (\w -> { w | fileTree = Maybe.map (\ft -> { ft | error = Just fileTreeError }) w.fileTree })
+                                model
                             , Cmd.none
                             )
 
-                Err err ->
-                    ( nextModel, Cmd.none )
+                Err _ ->
+                    ( model, Cmd.none )
 
         ReceivedFileTree fileTreeJson ->
             case decodeFiles fileTreeJson of
                 Err _ ->
-                    ( nextModel, Cmd.none )
+                    ( model, Cmd.none )
 
                 Ok treeAndFlat ->
-                    case fileTree of
-                        -- First file tree received
+                    case WL.active model of
                         Nothing ->
-                            ( { nextModel
-                                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
-                                , terminal = Just (Terminal.init treeAndFlat.tree.path PortHandlers.editorPorts (PortHandlers.terminalPorts treeAndFlat.tree.path))
-                                , fileTreeShowing = True
-                                , terminalShowing = True
+                            -- No workspace exists yet — create one from the tree
+                            let
+                                ws =
+                                    WL.empty treeAndFlat.tree.path
+                            in
+                            ( { model
+                                | workspaces =
+                                    model.workspaces
+                                        ++ [ { ws
+                                                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
+                                                , terminal = Just (Terminal.init treeAndFlat.tree.path PortHandlers.editorPorts (PortHandlers.terminalPorts treeAndFlat.tree.path))
+                                                , fileTreeShowing = True
+                                                , terminalShowing = True
+                                             }
+                                           ]
+                                , activeIndex = List.length model.workspaces
                               }
                             , Ports.requestSetupTerminalResizeObserver ()
                             )
 
-                        -- Refreshed file tree received
-                        Just oldTree ->
-                            -- If the active file no longer exists, remove the editor
-                            let
-                                activeFileDeleted =
-                                    case nextModel.activeFile of
-                                        Just activeFile ->
-                                            not (List.member activeFile (List.map .path treeAndFlat.flat))
+                        Just ws ->
+                            case ws.fileTree of
+                                Nothing ->
+                                    -- First file tree for this workspace
+                                    ( WL.mapActive
+                                        (\w ->
+                                            { w
+                                                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
+                                                , terminal = Just (Terminal.init treeAndFlat.tree.path PortHandlers.editorPorts (PortHandlers.terminalPorts treeAndFlat.tree.path))
+                                                , fileTreeShowing = True
+                                                , terminalShowing = True
+                                            }
+                                        )
+                                        model
+                                    , Ports.requestSetupTerminalResizeObserver ()
+                                    )
 
-                                        Nothing ->
-                                            False
-                            in
-                            ( { nextModel
-                                | fileTree = Just (FileTree.FileTree.refresh oldTree treeAndFlat)
-                                , editor =
-                                    if activeFileDeleted then
-                                        Nothing
+                                Just oldTree ->
+                                    -- Refreshed file tree
+                                    let
+                                        activeFileDeleted =
+                                            case ws.activeFile of
+                                                Just af ->
+                                                    not (List.member af (List.map .path treeAndFlat.flat))
 
-                                    else
-                                        nextModel.editor
-                              }
-                            , Cmd.none
-                            )
+                                                Nothing ->
+                                                    False
+                                    in
+                                    ( WL.mapActive
+                                        (\w ->
+                                            { w
+                                                | fileTree = Just (FileTree.FileTree.refresh oldTree treeAndFlat)
+                                                , editor =
+                                                    if activeFileDeleted then
+                                                        Nothing
 
-        FocusElementByIdResult result ->
-            ( nextModel, Cmd.none )
+                                                    else
+                                                        w.editor
+                                            }
+                                        )
+                                        model
+                                    , Cmd.none
+                                    )
+
+        FocusElementByIdResult _ ->
+            ( model, Cmd.none )
 
         RequestOpenProject directory ->
-            Lib.requestOpenProject nextModel directory
+            Lib.requestOpenProject model directory
 
         RequestPickProjectFolder ->
-            ( nextModel, Ports.requestPickProjectFolder () )
+            ( model, Ports.requestPickProjectFolder () )
 
         PickedProjectFolder maybeDir ->
             case maybeDir of
                 Just dir ->
-                    Lib.requestOpenProject nextModel dir
+                    Lib.requestOpenProject model dir
 
                 Nothing ->
-                    ( nextModel, Cmd.none )
+                    ( model, Cmd.none )
 
         ReceivedRecentProjects paths ->
-            ( { nextModel | recentProjects = paths }, Cmd.none )
+            ( { model | recentProjects = paths }, Cmd.none )
 
         ExternalFileChange json ->
             case Json.Decode.decodeValue decodeJsonFile json of
                 Ok externalFile ->
-                    applyExternalFileChange externalFile nextModel
+                    applyExternalFileChange externalFile model
 
                 Err _ ->
-                    ( nextModel, Cmd.none )
+                    ( model, Cmd.none )
 
         ExternalFileDelete path ->
-            if nextModel.activeFile == Just path then
-                ( { nextModel
-                    | editor = Nothing
-                    , activeFile = Nothing
-                    , fileHistory = List.filter (\( p, _ ) -> p /= path) nextModel.fileHistory
-                  }
-                , Cmd.none
-                )
+            case WL.active model of
+                Just ws ->
+                    if ws.activeFile == Just path then
+                        ( WL.mapActive
+                            (\w ->
+                                { w
+                                    | editor = Nothing
+                                    , activeFile = Nothing
+                                    , fileHistory = List.filter (\( p, _ ) -> p /= path) w.fileHistory
+                                }
+                            )
+                            model
+                        , Cmd.none
+                        )
 
-            else
-                ( nextModel, Cmd.none )
+                    else
+                        ( model, Cmd.none )
+
+                Nothing ->
+                    ( model, Cmd.none )
 
         FuzzyFindInProjectFileOrDirectory string ->
-            ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFinderInputValue = string } }, Ports.requestFuzzyFindInProjectFileOrDirectory string )
+            ( WL.mapActive
+                (\w ->
+                    let
+                        ff =
+                            w.fuzzyFinder
+                    in
+                    { w | fuzzyFinder = { ff | fuzzyFinderInputValue = string } }
+                )
+                model
+            , Ports.requestFuzzyFindInProjectFileOrDirectory string
+            )
 
         FuzzyFindProjects string ->
-            ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFinderInputValue = string } }, Ports.requestFuzzyFindProjects string )
+            ( WL.mapActive
+                (\w ->
+                    let
+                        ff =
+                            w.fuzzyFinder
+                    in
+                    { w | fuzzyFinder = { ff | fuzzyFinderInputValue = string } }
+                )
+                model
+            , Ports.requestFuzzyFindProjects string
+            )
 
         ReceivedFuzzyFindResults results ->
-            ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFindResults = results } }, Cmd.none )
+            ( WL.mapActive
+                (\w ->
+                    let
+                        ff =
+                            w.fuzzyFinder
+                    in
+                    { w | fuzzyFinder = { ff | fuzzyFindResults = results } }
+                )
+                model
+            , Cmd.none
+            )
 
         FocusEditor ->
-            ( { nextModel
-                | focused = Editor
-              }
-            , Cmd.none
-            )
+            ( WL.mapActive (\w -> { w | focused = Editor }) model, Cmd.none )
 
         FocusFileTree ->
-            ( { nextModel
-                | focused = FileTree
-              }
-            , Cmd.none
-            )
+            ( WL.mapActive (\w -> { w | focused = FileTree }) model, Cmd.none )
 
         FocusTerminal ->
-            ( { nextModel
-                | focused = Terminal
-              }
-            , Cmd.none
-            )
+            ( WL.mapActive (\w -> { w | focused = Terminal }) model, Cmd.none )
 
         RequestActivateFileOrDirectory path ->
-            requestActivateFileOrDirectory nextModel path True
+            requestActivateFileOrDirectory model path True
 
         ActivateFile jsonFile ->
             case Json.Decode.decodeValue decodeJsonFile jsonFile of
                 Ok file ->
-                    let
-                        ( nextFileTree, fileTreeMsgs ) =
-                            case fileTree of
-                                Just tree ->
-                                    FileTree.FileTree.update (FileTree.Types.ActivateFile file.path) tree
-                                        |> Tuple.mapFirst Just
+                    case WL.active model of
+                        Nothing ->
+                            ( model, Cmd.none )
 
-                                Nothing ->
-                                    ( Nothing, Cmd.none )
+                        Just ws ->
+                            let
+                                ( nextFileTree, fileTreeMsgs ) =
+                                    case ws.fileTree of
+                                        Just tree ->
+                                            FileTree.FileTree.update (FileTree.Types.ActivateFile file.path) tree
+                                                |> Tuple.mapFirst Just
 
-                        ( nextEditor, editorMsgs ) =
-                            case editor of
-                                Just justEditor ->
-                                    Editor.Lib.changeFile justEditor file.path file.contents
+                                        Nothing ->
+                                            ( Nothing, Cmd.none )
 
-                                Nothing ->
-                                    ( Editor.Lib.init
-                                        True
-                                        file.path
-                                        file.contents
-                                        { vimMode = True
-                                        , showLineNumbers = True
-                                        , padBottom = True
-                                        , padRight = True
-                                        , showCursor = True
-                                        , characterWidth = 8.40625
-                                        }
-                                        editorPorts
-                                    , Cmd.none
-                                    )
-                    in
-                    ( { model
-                        | editor = Just nextEditor
-                        , fileTree = nextFileTree
-                        , fileHistory = addToFileHistory model.fileHistory file.path file.contents
-                        , activeFile = Just file.path
-                        , focused = Editor
-                      }
-                    , Cmd.batch [ Cmd.map EditorMsg editorMsgs, Cmd.map FileTreeMsg fileTreeMsgs ]
-                    )
+                                ( nextEditor, editorMsgs ) =
+                                    case ws.editor of
+                                        Just justEditor ->
+                                            Editor.Lib.changeFile justEditor file.path file.contents
 
-                Err error ->
+                                        Nothing ->
+                                            ( Editor.Lib.init
+                                                True
+                                                file.path
+                                                file.contents
+                                                { vimMode = True
+                                                , showLineNumbers = True
+                                                , padBottom = True
+                                                , padRight = True
+                                                , showCursor = True
+                                                , characterWidth = 8.40625
+                                                }
+                                                editorPorts
+                                            , Cmd.none
+                                            )
+                            in
+                            ( WL.mapActive
+                                (\w ->
+                                    { w
+                                        | editor = Just nextEditor
+                                        , fileTree = nextFileTree
+                                        , fileHistory = addToFileHistory w.fileHistory file.path file.contents
+                                        , activeFile = Just file.path
+                                        , focused = Editor
+                                    }
+                                )
+                                model
+                            , Cmd.batch [ Cmd.map EditorMsg editorMsgs, Cmd.map FileTreeMsg fileTreeMsgs ]
+                            )
+
+                Err _ ->
                     ( model, Cmd.none )
 
         ActivateDirectory directory ->
-            case fileTree of
+            case WL.active model |> Maybe.andThen .fileTree of
                 Just tree ->
                     let
                         ( nextFileTree, messages ) =
                             FileTree.FileTree.update (FileTree.Types.ActivateDirectory directory) tree
                     in
-                    ( { nextModel | focused = FileTree, fileTree = Just nextFileTree }, Cmd.map FileTreeMsg messages )
+                    ( WL.mapActive (\w -> { w | focused = FileTree, fileTree = Just nextFileTree }) model
+                    , Cmd.map FileTreeMsg messages
+                    )
 
                 Nothing ->
-                    ( nextModel, Cmd.none )
+                    ( model, Cmd.none )
 
         FileTreeMsg m ->
-            handleFileTreeMsg m nextModel
+            handleFileTreeMsg m model
 
         EditorMsg m ->
-            handleEditorMsg m nextModel
+            handleEditorMsg m model
+
+        SelectTab idx ->
+            -- Switching tabs re-asks Rust to load that project (single-PR
+            -- intermediate: the Rust side is still single-workspace, so
+            -- we re-open to get its file tree + terminal back. Full state
+            -- preservation across tabs is the next PR.
+            case List.Extra.getAt idx model.workspaces of
+                Just ws ->
+                    if idx == model.activeIndex then
+                        ( disarmAllCloses model, Cmd.none )
+
+                    else
+                        ( { model | activeIndex = idx } |> disarmAllCloses
+                        , Ports.requestOpenProject ws.projectPath
+                        )
+
+                Nothing ->
+                    ( disarmAllCloses model, Cmd.none )
+
+        AddTabRequested ->
+            ( disarmAllCloses model, Ports.requestPickProjectFolder () )
+
+        CloseRequested idx ->
+            ( armCloseFor idx model
+              -- Schedule auto-disarm in 3s; if user re-arms a different tab
+              -- mid-window, the disarm still fires and resets whatever's
+              -- currently armed. Acceptable courtesy behavior.
+            , Process.sleep 3000 |> Task.perform (\_ -> DisarmCloseTick)
+            )
+
+        CloseConfirmed idx ->
+            -- If closing changes the active workspace, re-open the new
+            -- active project on the Rust side (single-PR intermediate).
+            let
+                prevPath =
+                    WL.active model |> Maybe.map .projectPath
+
+                nextModel =
+                    WL.removeAt idx model |> disarmAllCloses
+
+                nextPath =
+                    WL.active nextModel |> Maybe.map .projectPath
+            in
+            if prevPath == nextPath then
+                ( nextModel, Cmd.none )
+
+            else
+                case nextPath of
+                    Just path ->
+                        ( nextModel, Ports.requestOpenProject path )
+
+                    Nothing ->
+                        ( nextModel, Cmd.none )
+
+        DisarmCloseTick ->
+            ( disarmAllCloses model, Cmd.none )
+
+
+armCloseFor : Int -> Model -> Model
+armCloseFor idx model =
+    { model
+        | workspaces =
+            List.indexedMap
+                (\i ws ->
+                    if i == idx then
+                        { ws | closeArmed = True }
+
+                    else
+                        { ws | closeArmed = False }
+                )
+                model.workspaces
+    }
+
+
+disarmAllCloses : Model -> Model
+disarmAllCloses model =
+    { model
+        | workspaces =
+            List.map (\ws -> { ws | closeArmed = False }) model.workspaces
+    }
 
 
 editorSubscriptions : Maybe Editor.Msg.Model -> Sub Msg
@@ -401,7 +555,7 @@ fileTreeSubscriptions =
 terminalSubscriptions : Maybe Terminal.Types.Model -> Sub Msg
 terminalSubscriptions maybeTerminal =
     case maybeTerminal of
-        Just terminal ->
+        Just _ ->
             Sub.batch
                 [ Sub.map TerminalMsg <| Ports.receiveTerminalOutput Terminal.Types.ReceivedTerminalOutput
                 , Sub.map TerminalMsg <| Ports.receiveTerminalResized Terminal.Types.ReceivedTerminalResized
@@ -413,9 +567,13 @@ terminalSubscriptions maybeTerminal =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
+    let
+        activeWs =
+            WL.active model
+    in
     Sub.batch
-        [ editorSubscriptions model.editor
-        , terminalSubscriptions model.terminal
+        [ editorSubscriptions (activeWs |> Maybe.andThen .editor)
+        , terminalSubscriptions (activeWs |> Maybe.andThen .terminal)
         , fileTreeSubscriptions
         , Ports.receiveNotification ReceivedNotification
         , Ports.receiveFuzzyFindResults ReceivedFuzzyFindResults
@@ -430,19 +588,19 @@ subscriptions model =
         ]
 
 
-viewFileTree : Model -> Html.Html Msg
-viewFileTree model =
-    case model.fileTreeShowing of
+viewFileTree : Workspace -> Html.Html Msg
+viewFileTree ws =
+    case ws.fileTreeShowing of
         True ->
             div
                 ([ class "border overflow-scroll bg-lightgray_transparent h-full w-full"
                  , onClick FocusFileTree
                  , classList
-                    [ ( "border-blue-400", model.focused == FileTree )
-                    , ( "border-lightgray_transparent", model.focused /= FileTree )
+                    [ ( "border-blue-400", ws.focused == FileTree )
+                    , ( "border-lightgray_transparent", ws.focused /= FileTree )
                     ]
                  ]
-                    ++ (case model.terminalShowing of
+                    ++ (case ws.terminalShowing of
                             False ->
                                 [ style "border-bottom-left-radius" "12px" ]
 
@@ -453,27 +611,27 @@ viewFileTree model =
                 [ Html.map FileTreeMsg <|
                     Html.Lazy.lazy
                         FileTree.FileTree.view
-                        model.fileTree
+                        ws.fileTree
                 ]
 
         False ->
             div [] []
 
 
-viewEditor : Model -> Html.Html Msg
-viewEditor model =
-    case model.editor of
+viewEditor : Workspace -> List String -> Html.Html Msg
+viewEditor ws recentProjects =
+    case ws.editor of
         Just editor ->
             div
                 ([ class "w-full h-full border overflow-hidden"
                  , style "will-change" "contents"
                  , onClick FocusEditor
                  , classList
-                    [ ( "border-blue-400", model.focused == Editor )
-                    , ( "border-lightgray-transparent", model.focused /= Editor )
+                    [ ( "border-blue-400", ws.focused == Editor )
+                    , ( "border-lightgray-transparent", ws.focused /= Editor )
                     ]
                  ]
-                    ++ (case ( model.fileTreeShowing, model.terminalShowing ) of
+                    ++ (case ( ws.fileTreeShowing, ws.terminalShowing ) of
                             ( False, False ) ->
                                 [ style "border-radius" "0 0 12px 12px" ]
 
@@ -491,7 +649,7 @@ viewEditor model =
                 ]
 
         Nothing ->
-            case Maybe.map (.fileTree >> .path) model.fileTree of
+            case Maybe.map (.fileTree >> .path) ws.fileTree of
                 Just _ ->
                     div
                         [ class "flex-1 flex justify-center h-full items-center text-2xl"
@@ -500,17 +658,17 @@ viewEditor model =
 
                 Nothing ->
                     Welcome.Welcome.view
-                        { recents = model.recentProjects
+                        { recents = recentProjects
                         , onOpenFolder = RequestPickProjectFolder
                         , onOpenRecent = RequestOpenProject
                         }
 
 
-viewFuzzyFinder : Model -> Html.Html Msg
-viewFuzzyFinder model =
-    case model.focused of
+viewFuzzyFinder : Workspace -> Html.Html Msg
+viewFuzzyFinder ws =
+    case ws.focused of
         FuzzyFinder ->
-            FuzzyFinder.FuzzyFinder.view model.fuzzyFinder (Maybe.map (.fileTree >> .path) model.fileTree)
+            FuzzyFinder.FuzzyFinder.view ws.fuzzyFinder (Maybe.map (.fileTree >> .path) ws.fileTree)
 
         _ ->
             text ""
@@ -519,27 +677,65 @@ viewFuzzyFinder model =
 view : Model -> Html.Html Msg
 view model =
     div [ class "flex flex-col w-full h-full outline-none overflow-hidden" ]
+        [ case ( WL.active model, List.isEmpty model.workspaces ) of
+            ( Just ws, _ ) ->
+                div [ class "flex flex-col w-full h-full" ]
+                    [ Tabs.Tabs.view { workspaces = model.workspaces, activeIndex = model.activeIndex }
+                    , viewWorkspace ws model.recentProjects
+                    ]
+
+            ( Nothing, False ) ->
+                -- Workspaces exist but activeIndex is out of bounds — render
+                -- the tab strip alone so the user can pick one.
+                div [ class "flex flex-col w-full h-full" ]
+                    [ Tabs.Tabs.view { workspaces = model.workspaces, activeIndex = model.activeIndex }
+                    , viewWelcomeOnly model.recentProjects
+                    ]
+
+            ( Nothing, True ) ->
+                viewWelcomeOnly model.recentProjects
+        , viewNotifications model.notifications
+        ]
+
+
+viewWelcomeOnly : List String -> Html.Html Msg
+viewWelcomeOnly recents =
+    Welcome.Welcome.view
+        { recents = recents
+        , onOpenFolder = RequestPickProjectFolder
+        , onOpenRecent = RequestOpenProject
+        }
+
+
+viewWorkspace : Workspace -> List String -> Html.Html Msg
+viewWorkspace ws recentProjects =
+    div
+        [ class "flex flex-col w-full"
+        , style "flex" "1 1 auto"
+        , style "min-height" "0"
+        , style "overflow" "hidden"
+        ]
         [ div
             [ class "w-full flex"
-            , case model.terminalShowing of
+            , case ws.terminalShowing of
                 True ->
                     style "height" "70%"
 
                 False ->
                     style "height" "100%"
             ]
-            [ case model.fileTreeShowing of
+            [ case ws.fileTreeShowing of
                 True ->
                     div
                         [ style "width" "20%"
                         , class "select-none"
                         ]
-                        [ viewFileTree model ]
+                        [ viewFileTree ws ]
 
                 False ->
                     text ""
             , div
-                [ case model.fileTreeShowing of
+                [ case ws.fileTreeShowing of
                     True ->
                         style "width" "80%"
 
@@ -547,16 +743,15 @@ view model =
                         style "width" "100%"
                 , class "select-none"
                 ]
-                [ viewEditor model ]
+                [ viewEditor ws recentProjects ]
             ]
-        , case model.terminalShowing of
+        , case ws.terminalShowing of
             True ->
-                viewTerminal model.terminal model.focused
+                viewTerminal ws.terminal ws.focused
 
             False ->
                 text ""
-        , viewFuzzyFinder model
-        , viewNotifications model.notifications
+        , viewFuzzyFinder ws
         ]
 
 
@@ -634,66 +829,73 @@ viewNotificationCard ( _, notification ) =
         ]
 
 
-{-| Apply an externally-modified file's contents to the editor when it's
-the currently-active file. Disk always wins: no diff prompt, the editor
-just adopts the new contents and clamps the cursor to a valid position.
-A round-trip from our own save is detected by exact-content equality and
-treated as a no-op so saving doesn't reset cursor or scroll.
+{-| Apply an externally-modified file's contents to the active workspace's
+editor when that file is currently active. Disk always wins. Cursor is
+preserved, clamped to the new line bounds.
 -}
-applyExternalFileChange : FileTree.Types.File -> Model.Model -> ( Model.Model, Cmd Msg )
+applyExternalFileChange : FileTree.Types.File -> Model -> ( Model, Cmd Msg )
 applyExternalFileChange externalFile model =
-    case ( model.activeFile == Just externalFile.path, model.editor ) of
-        ( True, Just editor ) ->
-            let
-                currentContents =
-                    Editor.Lib.renderableLinesToContents editor.travelable.renderableLines
-            in
-            if currentContents == externalFile.contents then
-                ( model, Cmd.none )
-
-            else
-                let
-                    newLines =
-                        Editor.Lib.contentsToRenderableLines externalFile.contents
-
-                    currentCursor =
-                        editor.travelable.cursorPosition
-
-                    clampedY =
-                        max 0 (min (List.length newLines - 1) currentCursor.y)
-
-                    clampedLineLength =
-                        List.Extra.getAt clampedY newLines
-                            |> Maybe.map (.text >> String.length)
-                            |> Maybe.withDefault 0
-
-                    clampedX =
-                        max 0 (min clampedLineLength currentCursor.x)
-
-                    travelable =
-                        editor.travelable
-
-                    newTravelable =
-                        { travelable
-                            | renderableLines = newLines
-                            , cursorPosition = { x = clampedX, y = clampedY }
-                        }
-
-                    newEditor =
-                        { editor | travelable = newTravelable }
-                in
-                ( { model
-                    | editor = Just newEditor
-                    , fileHistory = addToFileHistory model.fileHistory externalFile.path externalFile.contents
-                  }
-                , Cmd.none
-                )
-
-        _ ->
+    case WL.active model of
+        Nothing ->
             ( model, Cmd.none )
 
+        Just ws ->
+            case ( ws.activeFile == Just externalFile.path, ws.editor ) of
+                ( True, Just editor ) ->
+                    let
+                        currentContents =
+                            Editor.Lib.renderableLinesToContents editor.travelable.renderableLines
+                    in
+                    if currentContents == externalFile.contents then
+                        ( model, Cmd.none )
 
-main : Program Flags Model.Model Msg
+                    else
+                        let
+                            newLines =
+                                Editor.Lib.contentsToRenderableLines externalFile.contents
+
+                            currentCursor =
+                                editor.travelable.cursorPosition
+
+                            clampedY =
+                                max 0 (min (List.length newLines - 1) currentCursor.y)
+
+                            clampedLineLength =
+                                List.Extra.getAt clampedY newLines
+                                    |> Maybe.map (.text >> String.length)
+                                    |> Maybe.withDefault 0
+
+                            clampedX =
+                                max 0 (min clampedLineLength currentCursor.x)
+
+                            travelable =
+                                editor.travelable
+
+                            newTravelable =
+                                { travelable
+                                    | renderableLines = newLines
+                                    , cursorPosition = { x = clampedX, y = clampedY }
+                                }
+
+                            newEditor =
+                                { editor | travelable = newTravelable }
+                        in
+                        ( WL.mapActive
+                            (\w ->
+                                { w
+                                    | editor = Just newEditor
+                                    , fileHistory = addToFileHistory w.fileHistory externalFile.path externalFile.contents
+                                }
+                            )
+                            model
+                        , Cmd.none
+                        )
+
+                _ ->
+                    ( model, Cmd.none )
+
+
+main : Program Flags Model Msg
 main =
     Browser.element
         { init = init

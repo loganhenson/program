@@ -11,6 +11,7 @@ use std::{
   path::{Path, PathBuf},
   process::Command,
   sync::{
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
     Arc, Mutex,
   },
@@ -34,6 +35,22 @@ type SharedWatcher = Arc<Mutex<Option<RecommendedWatcher>>>;
 /// so the file tree rebuilds at most once per burst rather than once per
 /// event.
 const PROJECT_REBUILD_DEBOUNCE_MS: u64 = 200;
+
+/// Channels + activation flag for the current foreground terminal PTY.
+/// `is_active` flips to false when the terminal is replaced (e.g., user
+/// switches projects); the old PTY's output thread keeps reading but
+/// stops emitting events, so we don't pollute the new terminal's output
+/// stream. The PTY process itself isn't killed (the terminal-server lib
+/// doesn't expose a kill API yet) — its threads just become silent. The
+/// follow-up multi-workspace PR will replace this with per-workspace PTY
+/// state stored in a HashMap and properly torn down on close.
+struct TerminalSlot {
+  run_tx: Sender<String>,
+  resize_tx: Sender<Size>,
+  is_active: Arc<AtomicBool>,
+}
+
+type SharedTerminalSlot = Arc<Mutex<Option<TerminalSlot>>>;
 
 type SharedRecents = Arc<Mutex<RecentProjects>>;
 
@@ -395,6 +412,7 @@ fn main() {
 
       let file_watcher: SharedWatcher = Arc::new(Mutex::new(None));
       let project_watcher: SharedWatcher = Arc::new(Mutex::new(None));
+      let terminal_slot: SharedTerminalSlot = Arc::new(Mutex::new(None));
 
       let window = app.get_webview_window("main").unwrap();
       let window_for_callback = window.clone();
@@ -403,6 +421,7 @@ fn main() {
       let app_for_callback = app_handle.clone();
       let file_watcher_for_callback = file_watcher.clone();
       let project_watcher_for_callback = project_watcher.clone();
+      let terminal_slot_for_callback = terminal_slot.clone();
       window.once("frontend-ready", move |_| {
         bootstrap(
           window_for_callback,
@@ -411,6 +430,7 @@ fn main() {
           app_for_callback,
           file_watcher_for_callback,
           project_watcher_for_callback,
+          terminal_slot_for_callback,
         );
       });
       Ok(())
@@ -426,6 +446,7 @@ fn bootstrap(
   app: AppHandle<Wry>,
   file_watcher: SharedWatcher,
   project_watcher: SharedWatcher,
+  terminal_slot: SharedTerminalSlot,
 ) {
   let window_ = window.clone();
   let window_terminal = window.clone();
@@ -443,6 +464,27 @@ fn bootstrap(
   let recents_for_projects = recents.clone();
   let app_for_open = app.clone();
   let watcher_for_activate = file_watcher.clone();
+  let terminal_for_run = terminal_slot.clone();
+  let terminal_for_resize = terminal_slot.clone();
+  let terminal_for_open = terminal_slot.clone();
+  let terminal_for_startup = terminal_slot.clone();
+
+  // Register `run` and `resize` listeners ONCE here, not inside
+  // start_terminal. Each one reads from the current TerminalSlot, so
+  // replacing the slot doesn't pile up duplicate listeners (pre-existing
+  // bug that surfaces once the user can switch projects mid-session).
+  window.listen("run", move |event| {
+    let contents: String = serde_json::from_str(event.payload()).unwrap();
+    if let Some(slot) = terminal_for_run.lock().unwrap().as_ref() {
+      let _ = slot.run_tx.send(contents);
+    }
+  });
+  window.listen("resize", move |event| {
+    let size: Size = serde_json::from_str(event.payload()).unwrap();
+    if let Some(slot) = terminal_for_resize.lock().unwrap().as_ref() {
+      let _ = slot.resize_tx.send(size);
+    }
+  });
 
   // Start file tree worker
   let (filetree_tx, filetree_rx): (Sender<FileTreeAndFlat>, Receiver<FileTreeAndFlat>) =
@@ -526,7 +568,8 @@ fn bootstrap(
       eprintln!("failed to install project watcher for {}: {:?}", dir, e);
     }
 
-    start_terminal(&window_open_project, dir.clone());
+    let new_term = spawn_terminal(&window_open_project, dir.clone());
+    replace_terminal(&terminal_for_open, new_term);
     window_open_project
       .emit("initialize", dir)
       .expect("failed to emit");
@@ -660,7 +703,8 @@ fn bootstrap(
         eprintln!("failed to install project watcher for {}: {:?}", dir, e);
       }
 
-      start_terminal(&window_terminal, dir.clone());
+      let new_term = spawn_terminal(&window_terminal, dir.clone());
+      replace_terminal(&terminal_for_startup, new_term);
       window_.emit("initialize", dir).expect("failed to emit");
     }
     None => {
@@ -685,7 +729,8 @@ fn bootstrap(
           }
 
           // Start the terminal in the working directory
-          start_terminal(&window_terminal, canonical.clone());
+          let new_term = spawn_terminal(&window_terminal, canonical.clone());
+          replace_terminal(&terminal_for_startup, new_term);
           window_
             .emit("initialize", &canonical)
             .expect("failed to emit")
@@ -699,7 +744,7 @@ fn bootstrap(
   };
 }
 
-fn start_terminal(window: &WebviewWindow<Wry>, directory: String) {
+fn spawn_terminal(window: &WebviewWindow<Wry>, directory: String) -> TerminalSlot {
   let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
 
@@ -710,29 +755,42 @@ fn start_terminal(window: &WebviewWindow<Wry>, directory: String) {
   let (terminal_resize_tx, terminal_resize_rx): (Sender<Size>, Receiver<Size>) = mpsc::channel();
 
   let terminal_api = terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx);
-  let terminal_api_run_tx = terminal_api.run_tx.clone();
-  let terminal_api_resize_tx = terminal_api.resize_tx.clone();
-  window.listen("run", move |event| {
-    let contents: String = serde_json::from_str(event.payload()).unwrap();
-    terminal_api_run_tx.send(contents).unwrap()
-  });
-  window.listen("resize", move |event| {
-    let size: Size = serde_json::from_str(event.payload()).unwrap();
-    terminal_api_resize_tx.send(size).unwrap()
-  });
+  let is_active = Arc::new(AtomicBool::new(true));
 
-  thread::spawn(move || {
-    for message in terminal_resize_rx {
-      window_terminal_resize
-        .emit("sendResizedToTerminal", message)
-        .unwrap();
-    }
-  });
+  let is_active_for_output = is_active.clone();
   thread::spawn(move || {
     for message in terminal_output_rx {
-      window_terminal_output.emit("output", message).unwrap();
+      if is_active_for_output.load(Ordering::Relaxed) {
+        let _ = window_terminal_output.emit("output", message);
+      }
     }
   });
+
+  let is_active_for_resize = is_active.clone();
+  thread::spawn(move || {
+    for message in terminal_resize_rx {
+      if is_active_for_resize.load(Ordering::Relaxed) {
+        let _ = window_terminal_resize.emit("sendResizedToTerminal", message);
+      }
+    }
+  });
+
+  TerminalSlot {
+    run_tx: terminal_api.run_tx,
+    resize_tx: terminal_api.resize_tx,
+    is_active,
+  }
+}
+
+/// Replace the foreground terminal. The previous slot's `is_active` flips
+/// to false so its threads keep reading but stop emitting (the PTY
+/// itself lingers until the lib gets a kill API — known leak).
+fn replace_terminal(slot: &SharedTerminalSlot, new_terminal: TerminalSlot) {
+  let mut guard = slot.lock().unwrap();
+  if let Some(old) = guard.as_ref() {
+    old.is_active.store(false, Ordering::Relaxed);
+  }
+  *guard = Some(new_terminal);
 }
 
 /// Cap fuzzy results so we never feed the frontend more DOM nodes than it

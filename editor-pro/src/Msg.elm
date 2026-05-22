@@ -37,3 +37,8 @@ type Msg
     | NotificationTick Time.Posix
     | ExternalFileChange Json.Encode.Value
     | ExternalFileDelete String
+    | SelectTab Int
+    | AddTabRequested
+    | CloseRequested Int
+    | CloseConfirmed Int
+    | DisarmCloseTick
