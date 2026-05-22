@@ -31,14 +31,16 @@ use terminal::{parse::TerminalCommand, terminal::Size};
 /// event.
 const PROJECT_REBUILD_DEBOUNCE_MS: u64 = 200;
 
-/// Per-workspace terminal channels + activation flag. When the workspace
-/// is dropped (close-tab) we flip `is_active` so the lingering output
-/// thread silently discards — the PTY itself can't be killed cleanly
-/// without a `kill` API in terminal-server (known leak, tracked).
+/// Per-workspace terminal channels. When the workspace is dropped
+/// (close-tab), `is_active` flips to false so any in-flight output
+/// emits are silenced, and `_kill_tx` dropping triggers terminal-server's
+/// kill-watcher to reap the child shell. The PTY threads then exit
+/// cleanly as their own channels close + the master hits EOF.
 struct TerminalSlot {
   run_tx: Sender<String>,
   resize_tx: Sender<Size>,
   is_active: Arc<AtomicBool>,
+  _kill_tx: Sender<()>,
 }
 
 /// Everything Rust holds on behalf of one open project tab. Dropping
@@ -873,6 +875,7 @@ fn spawn_terminal_for_workspace(
     run_tx: terminal_api.run_tx,
     resize_tx: terminal_api.resize_tx,
     is_active,
+    _kill_tx: terminal_api.kill_tx,
   }
 }
 

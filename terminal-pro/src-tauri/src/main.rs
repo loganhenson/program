@@ -53,6 +53,13 @@ fn start_terminal(window: &WebviewWindow<Wry>, directory: String) {
   let terminal_api_run_tx = terminal_api.run_tx.clone();
   let terminal_api_resize_tx = terminal_api.resize_tx.clone();
 
+  // terminal-server's kill-watcher reaps the shell when this Sender drops.
+  // terminal-pro is a single-PTY app — we want the shell alive for the
+  // app's lifetime, so we intentionally leak the Sender. OS cleanup on
+  // process exit reaps everything. (editor-pro holds kill_tx per workspace
+  // and drops on tab close to get proper per-tab cleanup.)
+  std::mem::forget(terminal_api.kill_tx);
+
   window.listen("run", move |event| {
     let contents: String = serde_json::from_str(event.payload()).unwrap();
     terminal_api_run_tx.send(contents).unwrap()
