@@ -1,13 +1,14 @@
 mod recent_projects;
 
 use filetree::filetree::{File, FileTreeAndFlat};
+use notify::{event::ModifyKind, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use preflight::{Check, ProbeOutcome, Report};
 use recent_projects::{RecentProjects, STORE_FILE, STORE_KEY};
 use serde_json::{self, Value};
 use std::{
   env, fs,
   fs::metadata,
-  path::PathBuf,
+  path::{Path, PathBuf},
   process::Command,
   sync::{
     mpsc::{self, Receiver, Sender},
@@ -21,6 +22,18 @@ use tauri::{
 };
 use tauri_plugin_store::StoreExt;
 use terminal::{parse::TerminalCommand, terminal::Size};
+
+/// Holds the active file's watcher. Dropping the watcher (or replacing it
+/// via Mutex assignment) stops notifications for the previously-watched
+/// file — there is at most one watched file at any time because the
+/// editor only shows one active file.
+type SharedWatcher = Arc<Mutex<Option<RecommendedWatcher>>>;
+
+/// Debounce window for project-wide rebuild requests. fs events come in
+/// bursts (atomic renames, IDE saves, `npm install`) — we coalesce them
+/// so the file tree rebuilds at most once per burst rather than once per
+/// event.
+const PROJECT_REBUILD_DEBOUNCE_MS: u64 = 200;
 
 type SharedRecents = Arc<Mutex<RecentProjects>>;
 
@@ -91,6 +104,147 @@ fn emit_notification(window: &WebviewWindow<Wry>, type_: &str, message: String) 
   if let Err(e) = window.emit("notification", payload) {
     eprintln!("failed to emit notification: {:?}", e);
   }
+}
+
+/// Install a single-file watcher on `path`. Replaces any prior watcher
+/// in `slot` (the old watcher is dropped, which stops fsevents for it).
+/// On modify events, re-reads the file with the usual caps and emits
+/// `externalFileChange { path, contents }` back to the webview. Identical
+/// contents are still emitted — the Elm side dedupes — which keeps this
+/// function simple and robust to fsevents coalescing.
+fn install_file_watcher(
+  path: &Path,
+  slot: &SharedWatcher,
+  window: WebviewWindow<Wry>,
+) -> notify::Result<()> {
+  let watched_path = path.to_path_buf();
+  let path_for_callback = watched_path.clone();
+  let window_for_callback = window;
+
+  let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    let event = match res {
+      Ok(e) => e,
+      Err(e) => {
+        eprintln!("file watcher error: {:?}", e);
+        return;
+      }
+    };
+
+    // fsevents reports the file path; sanity-check we're seeing our watched file
+    let is_our_file = event.paths.iter().any(|p| p == &path_for_callback);
+    if !is_our_file {
+      return;
+    }
+
+    let path_str = path_for_callback.to_string_lossy().to_string();
+
+    // Deletion (incl. rename-away) unloads the file in the editor —
+    // disk wins for delete too. Some tools use atomic rename which
+    // shows up as Remove then Create; the deletion notification is
+    // safe to send because the Elm handler will then re-activate
+    // the file if the user clicks it again in the tree.
+    let is_delete = matches!(
+      event.kind,
+      EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+    );
+    if is_delete {
+      // Confirm the path really is gone (some Modify(Name) events are
+      // atomic-rename round-trips that leave the file in place).
+      if !path_for_callback.exists() {
+        let payload = serde_json::json!({ "path": path_str });
+        if let Err(e) = window_for_callback.emit("externalFileDelete", payload) {
+          eprintln!("failed to emit externalFileDelete: {:?}", e);
+        }
+        return;
+      }
+    }
+
+    // Only react to actual content changes. Modify(Metadata(*)) (touches)
+    // are ignored.
+    let is_content_change = matches!(
+      event.kind,
+      EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any)
+    );
+    if !is_content_change {
+      return;
+    }
+
+    match load_file_with_cap(&path_str, MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH) {
+      LoadDecision::Ok(contents) => {
+        let payload = serde_json::json!({ "path": path_str, "contents": contents });
+        if let Err(e) = window_for_callback.emit("externalFileChange", payload) {
+          eprintln!("failed to emit externalFileChange: {:?}", e);
+        }
+      }
+      LoadDecision::NotAFile => {
+        // file replaced with a directory — treat as delete
+        let payload = serde_json::json!({ "path": path_str });
+        if let Err(e) = window_for_callback.emit("externalFileDelete", payload) {
+          eprintln!("failed to emit externalFileDelete: {:?}", e);
+        }
+      }
+      LoadDecision::TooLarge { .. } | LoadDecision::TooManyLines { .. } | LoadDecision::LineTooLong { .. } => {
+        emit_notification(
+          &window_for_callback,
+          "info",
+          format!(
+            "{} was modified externally but exceeds the editor's caps; keeping the in-memory contents.",
+            path_str
+          ),
+        );
+      }
+      LoadDecision::StatError(_) | LoadDecision::ReadError(_) => {
+        // transient read error during another tool's atomic rename — ignore
+      }
+    }
+  })?;
+
+  watcher.watch(&watched_path, RecursiveMode::NonRecursive)?;
+  *slot.lock().unwrap() = Some(watcher);
+  Ok(())
+}
+
+/// Install a recursive watcher on the project root. Any fs event under
+/// the project (create / modify / rename / remove) bumps a debounced
+/// rebuild of the file tree via the existing filetree_dir_tx channel,
+/// so the tree in the UI stays in sync with disk without polling.
+fn install_project_watcher(
+  project: &Path,
+  slot: &SharedWatcher,
+  filetree_dir_tx: Sender<String>,
+) -> notify::Result<()> {
+  let project_path = project.to_path_buf();
+  let project_str = project_path.to_string_lossy().to_string();
+
+  // Channel from the watcher callback to a debounce worker. Replacing
+  // the watcher drops the sender end; the worker then exits cleanly
+  // when its channel closes.
+  let (dirty_tx, dirty_rx) = mpsc::channel::<()>();
+
+  let project_str_for_worker = project_str.clone();
+  thread::spawn(move || {
+    while dirty_rx.recv().is_ok() {
+      // Drain any signals that piled up while we were idle.
+      while dirty_rx.try_recv().is_ok() {}
+      // Settle window — anything within this period gets coalesced.
+      thread::sleep(std::time::Duration::from_millis(PROJECT_REBUILD_DEBOUNCE_MS));
+      while dirty_rx.try_recv().is_ok() {}
+      if filetree_dir_tx.send(project_str_for_worker.clone()).is_err() {
+        // receiver is gone; nothing more to do
+        break;
+      }
+    }
+  });
+
+  let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    if res.is_ok() {
+      let _ = dirty_tx.send(());
+    }
+  })?;
+
+  watcher.watch(&project_path, RecursiveMode::Recursive)?;
+  *slot.lock().unwrap() = Some(watcher);
+  Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -239,17 +393,24 @@ fn main() {
       let recents = load_recents(&app_handle);
       app.manage(recents.clone());
 
+      let file_watcher: SharedWatcher = Arc::new(Mutex::new(None));
+      let project_watcher: SharedWatcher = Arc::new(Mutex::new(None));
+
       let window = app.get_webview_window("main").unwrap();
       let window_for_callback = window.clone();
       let tools_for_callback = tools_for_setup.clone();
       let recents_for_callback = recents.clone();
       let app_for_callback = app_handle.clone();
+      let file_watcher_for_callback = file_watcher.clone();
+      let project_watcher_for_callback = project_watcher.clone();
       window.once("frontend-ready", move |_| {
         bootstrap(
           window_for_callback,
           tools_for_callback,
           recents_for_callback,
           app_for_callback,
+          file_watcher_for_callback,
+          project_watcher_for_callback,
         );
       });
       Ok(())
@@ -263,6 +424,8 @@ fn bootstrap(
   tools: SharedTools,
   recents: SharedRecents,
   app: AppHandle<Wry>,
+  file_watcher: SharedWatcher,
+  project_watcher: SharedWatcher,
 ) {
   let window_ = window.clone();
   let window_terminal = window.clone();
@@ -272,17 +435,25 @@ fn bootstrap(
   let window_receive_fuzzy_find_results = window.clone();
   let window_receive_fuzzy_find_projects_results = window.clone();
   let window_create_file = window.clone();
+  let window_for_watcher = window.clone();
 
   let tools_for_fuzzy = tools.clone();
   let tools_for_projects = tools.clone();
   let recents_for_open = recents.clone();
   let recents_for_projects = recents.clone();
   let app_for_open = app.clone();
+  let watcher_for_activate = file_watcher.clone();
 
   // Start file tree worker
   let (filetree_tx, filetree_rx): (Sender<FileTreeAndFlat>, Receiver<FileTreeAndFlat>) =
     mpsc::channel();
   let (filetree_dir_tx, filetree_dir_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+
+  let filetree_dir_tx_for_init = filetree_dir_tx.clone();
+  let filetree_dir_tx_for_open = filetree_dir_tx.clone();
+  let filetree_dir_tx_for_startup = filetree_dir_tx.clone();
+  let project_watcher_for_open = project_watcher.clone();
+  let project_watcher_for_startup = project_watcher.clone();
 
   filetree::filetree::start(filetree_dir_rx, filetree_tx);
 
@@ -297,7 +468,7 @@ fn bootstrap(
   // Tell file tree worker that the app has initialized
   window.listen("initialized", move |event| {
     let directory: String = serde_json::from_str(event.payload()).unwrap();
-    filetree_dir_tx.send(directory).unwrap()
+    filetree_dir_tx_for_init.send(directory).unwrap()
   });
 
   window.listen("requestFuzzyFindInProjectFileOrDirectory", move |event| {
@@ -347,6 +518,14 @@ fn bootstrap(
     recents_for_open.lock().unwrap().record(&dir);
     save_recents(&app_for_open, &recents_for_open);
 
+    if let Err(e) = install_project_watcher(
+      Path::new(&dir),
+      &project_watcher_for_open,
+      filetree_dir_tx_for_open.clone(),
+    ) {
+      eprintln!("failed to install project watcher for {}: {:?}", dir, e);
+    }
+
     start_terminal(&window_open_project, dir.clone());
     window_open_project
       .emit("initialize", dir)
@@ -357,6 +536,16 @@ fn bootstrap(
     let filename: String = serde_json::from_str(event.payload()).unwrap();
     match load_file_with_cap(&filename, MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH) {
       LoadDecision::Ok(contents) => {
+        // Install a watcher for the now-active file. Replaces any prior
+        // watcher, so we never accumulate watchers as the user navigates.
+        if let Err(e) = install_file_watcher(
+          Path::new(&filename),
+          &watcher_for_activate,
+          window_for_watcher.clone(),
+        ) {
+          eprintln!("failed to install file watcher for {}: {:?}", filename, e);
+        }
+
         window_receive_activated_file
           .emit(
             "receiveActivatedFile",
@@ -463,6 +652,14 @@ fn bootstrap(
       recents.lock().unwrap().record(&dir);
       save_recents(&app, &recents);
 
+      if let Err(e) = install_project_watcher(
+        Path::new(&dir),
+        &project_watcher_for_startup,
+        filetree_dir_tx_for_startup.clone(),
+      ) {
+        eprintln!("failed to install project watcher for {}: {:?}", dir, e);
+      }
+
       start_terminal(&window_terminal, dir.clone());
       window_.emit("initialize", dir).expect("failed to emit");
     }
@@ -478,6 +675,14 @@ fn bootstrap(
 
           recents.lock().unwrap().record(&canonical);
           save_recents(&app, &recents);
+
+          if let Err(e) = install_project_watcher(
+            Path::new(&canonical),
+            &project_watcher_for_startup,
+            filetree_dir_tx_for_startup.clone(),
+          ) {
+            eprintln!("failed to install project watcher for {}: {:?}", canonical, e);
+          }
 
           // Start the terminal in the working directory
           start_terminal(&window_terminal, canonical.clone());

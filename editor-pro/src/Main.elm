@@ -9,6 +9,7 @@ import Editor.RawKeyboard as RawKeyboard
 import FileTree.Decoders exposing (decodeFiles, decodeJsonFile)
 import FileTree.FileTree
 import FileTree.Types
+import List.Extra
 import FuzzyFinder.FuzzyFinder
 import Html exposing (div, text)
 import Html.Attributes exposing (class, classList, id, style)
@@ -243,6 +244,27 @@ update msg model =
         ReceivedRecentProjects paths ->
             ( { nextModel | recentProjects = paths }, Cmd.none )
 
+        ExternalFileChange json ->
+            case Json.Decode.decodeValue decodeJsonFile json of
+                Ok externalFile ->
+                    applyExternalFileChange externalFile nextModel
+
+                Err _ ->
+                    ( nextModel, Cmd.none )
+
+        ExternalFileDelete path ->
+            if nextModel.activeFile == Just path then
+                ( { nextModel
+                    | editor = Nothing
+                    , activeFile = Nothing
+                    , fileHistory = List.filter (\( p, _ ) -> p /= path) nextModel.fileHistory
+                  }
+                , Cmd.none
+                )
+
+            else
+                ( nextModel, Cmd.none )
+
         FuzzyFindInProjectFileOrDirectory string ->
             ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFinderInputValue = string } }, Ports.requestFuzzyFindInProjectFileOrDirectory string )
 
@@ -392,6 +414,8 @@ subscriptions model =
         , Ports.receiveVideError ReceivedVideError
         , Ports.receivePickedProjectFolder PickedProjectFolder
         , Ports.receiveRecentProjects ReceivedRecentProjects
+        , Ports.receiveExternalFileChange ExternalFileChange
+        , Ports.receiveExternalFileDelete ExternalFileDelete
         , Time.every 1000 NotificationTick
         , Sub.map RawKeyboardMsg (RawKeyboard.subscriptions True True)
         ]
@@ -569,6 +593,65 @@ viewNotifications notifications =
             )
             notifications
         )
+
+
+{-| Apply an externally-modified file's contents to the editor when it's
+the currently-active file. Disk always wins: no diff prompt, the editor
+just adopts the new contents and clamps the cursor to a valid position.
+A round-trip from our own save is detected by exact-content equality and
+treated as a no-op so saving doesn't reset cursor or scroll.
+-}
+applyExternalFileChange : FileTree.Types.File -> Model.Model -> ( Model.Model, Cmd Msg )
+applyExternalFileChange externalFile model =
+    case ( model.activeFile == Just externalFile.path, model.editor ) of
+        ( True, Just editor ) ->
+            let
+                currentContents =
+                    Editor.Lib.renderableLinesToContents editor.travelable.renderableLines
+            in
+            if currentContents == externalFile.contents then
+                ( model, Cmd.none )
+
+            else
+                let
+                    newLines =
+                        Editor.Lib.contentsToRenderableLines externalFile.contents
+
+                    currentCursor =
+                        editor.travelable.cursorPosition
+
+                    clampedY =
+                        max 0 (min (List.length newLines - 1) currentCursor.y)
+
+                    clampedLineLength =
+                        List.Extra.getAt clampedY newLines
+                            |> Maybe.map (.text >> String.length)
+                            |> Maybe.withDefault 0
+
+                    clampedX =
+                        max 0 (min clampedLineLength currentCursor.x)
+
+                    travelable =
+                        editor.travelable
+
+                    newTravelable =
+                        { travelable
+                            | renderableLines = newLines
+                            , cursorPosition = { x = clampedX, y = clampedY }
+                        }
+
+                    newEditor =
+                        { editor | travelable = newTravelable }
+                in
+                ( { model
+                    | editor = Just newEditor
+                    , fileHistory = addToFileHistory model.fileHistory externalFile.path externalFile.contents
+                  }
+                , Cmd.none
+                )
+
+        _ ->
+            ( model, Cmd.none )
 
 
 main : Program Flags Model.Model Msg

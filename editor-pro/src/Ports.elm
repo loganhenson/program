@@ -146,3 +146,9 @@ port receivePickedProjectFolder : (Maybe String -> msg) -> Sub msg
 
 
 port receiveRecentProjects : (List String -> msg) -> Sub msg
+
+
+port receiveExternalFileChange : (Json.Encode.Value -> msg) -> Sub msg
+
+
+port receiveExternalFileDelete : (String -> msg) -> Sub msg
