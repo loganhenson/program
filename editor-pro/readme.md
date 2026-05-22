@@ -1,60 +1,44 @@
-# Editor Pro
+# EditorPro
 
-## Install the font
-- https://github.com/ryanoasis/nerd-fonts
-> OSX
-```console
-brew install font-jetbrains-mono-nerd-font
+Code editor app (Tauri, macOS).
+
+## Runtime dependencies
+
+Probed on launch. If anything is missing, the app shows install commands on startup:
+
+- `fd` — `brew install fd`
+- JetBrains Mono Nerd Font — `brew install --cask font-jetbrains-mono-nerd-font`
+
+## Develop
+
+```bash
+cd src-tauri && cargo build   # build deps once
+cd .. && npm install          # install npm deps (elm, tauri cli, esbuild, etc.)
+npm run watch                 # live dev: elm + js + css + tauri all in concurrent watch
 ```
 
-## Work on it
-- https://www.rust-lang.org/tools/install
-- `rustup default nightly`
+## Build a release DMG locally
 
-> Get tauri dev deps
-- https://tauri.studio/en/docs/getting-started/setup-linux/
-
-```console
-cd src-tauri
-cargo build
+```bash
+npm run build
+# DMG lands in src-tauri/target/release/bundle/dmg/
 ```
 
-> Get npm deps (elm)
-```console
-npm install
-```
-
-> Build
-```console
-npm run watch
-```
+CI produces release DMGs on tag push — see [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
 ## Test
-```console
-npm run test
+
+```bash
+npm test                        # runs the filetree cargo tests
+cd src-tauri && cargo test      # runs all editor-pro Rust tests (filetree + main + preflight wiring)
 ```
 
-## Build for distribution
-> Install the Tauri rust cli globally
-```console
-> cargo install tauri-cli --version ^1.0.0-beta
-> cargo tauri --version
-cargo-tauri 1.0.0-beta.0
-```
+## Launch from a shell
 
-> Actual build
-(`npm run build` proxies below)
-```console
-cd src-tauri
-cargo tauri build
-```
+Drop this into your `.zshrc` to open a path with the app:
 
-## How to run it from cli on OSX
-> Add this function to your .zshrc
-```console
+```bash
 function e() {
-open -a EditorPro.app --args "$(realpath "$@")"
+  open -a EditorPro.app --args "$(realpath "$@")"
 }
 ```
-
-> Note: Linux will put the `.deb` file in `./target/release/bundle/deb/..`

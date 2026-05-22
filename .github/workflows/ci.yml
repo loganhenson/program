@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  elm-test:
+    name: Elm tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            editor/package-lock.json
+            terminal-test/package-lock.json
+
+      - name: editor (lib) — install + test
+        working-directory: editor
+        run: |
+          npm ci
+          npm test
+
+      - name: terminal-test — install + test
+        working-directory: terminal-test
+        run: |
+          npm ci
+          npx elm-test
+
+  cargo-test:
+    name: Cargo tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            preflight
+            terminal-server
+            editor-pro/src-tauri/src/filetree
+
+      - name: preflight — cargo test
+        working-directory: preflight
+        run: cargo test --no-fail-fast
+
+      - name: terminal-server — cargo test
+        working-directory: terminal-server
+        run: cargo test --no-fail-fast
+
+      - name: filetree (editor-pro) — cargo test
+        working-directory: editor-pro/src-tauri/src/filetree
+        run: cargo test --no-fail-fast
+
+  build-check:
+    name: Tauri build check (${{ matrix.app }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [terminal-pro, editor-pro]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.app }}/src-tauri
+
+      - name: Install JS deps
+        working-directory: ${{ matrix.app }}
+        run: npm ci
+
+      - name: Build frontend (elm + js + css)
+        working-directory: ${{ matrix.app }}
+        run: |
+          npm run elm:optimize
+          npm run js
+          npm run css
+
+      - name: cargo check
+        working-directory: ${{ matrix.app }}/src-tauri
+        run: cargo check

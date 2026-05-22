@@ -1,44 +1,32 @@
-VTerm
+# TerminalPro
 
-## Install the font
-- https://github.com/ryanoasis/nerd-fonts
-> OSX
-```console
-brew install font-jetbrains-mono-nerd-font
+Terminal emulator app (Tauri, macOS).
+
+## Runtime dependencies
+
+Probed on launch. If anything is missing, the app shows install commands on startup:
+
+- JetBrains Mono Nerd Font — `brew install --cask font-jetbrains-mono-nerd-font`
+
+## Develop
+
+```bash
+cd src-tauri && cargo build   # build deps once
+cd .. && npm install          # install npm deps (elm, tauri cli, esbuild, etc.)
+npm run watch                 # live dev: elm + js + css + tauri all in concurrent watch
 ```
 
-## Work on it
-- https://www.rust-lang.org/tools/install
-- `rustup default nightly`
+## Build a release DMG locally
 
-> Get tauri dev deps
-- https://tauri.studio/en/docs/getting-started/setup-linux/
-
-```console
-cd src-tauri
-cargo build
+```bash
+npm run build
+# DMG lands in src-tauri/target/release/bundle/dmg/
 ```
 
-> Get npm deps (elm & tauri cli)
-```console
-npm install
-```
-
-> Build
-```console
-npm run watch
-```
+CI also produces signed-ready DMGs on tag push — see [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
 ## Test
-```console
-npm run test
-```
 
-> Actual build
-(`npm run build` proxies below)
-```console
-cd src-tauri
-cargo tauri build
+```bash
+npm test
 ```
-
-> Note: Linux will put the `.deb` file in `./target/release/bundle/deb/..`

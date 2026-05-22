@@ -1,11 +1,15 @@
 use filetree::filetree::{File, FileTreeAndFlat};
+use preflight::{Check, ProbeOutcome, Report};
 use serde_json::{self, Value};
 use std::{
   env, fs,
   fs::metadata,
   path::PathBuf,
   process::Command,
-  sync::mpsc::{self, Receiver, Sender},
+  sync::{
+    mpsc::{self, Receiver, Sender},
+    Arc, Mutex,
+  },
   thread,
 };
 use tauri::{
@@ -14,12 +18,77 @@ use tauri::{
 };
 use terminal::{parse::TerminalCommand, terminal::Size};
 
+fn fd_probe() -> ProbeOutcome {
+  preflight::probe_binary("fd")
+}
+
+fn nerd_font_probe() -> ProbeOutcome {
+  preflight::probe_font("NerdFontMono")
+}
+
+const CHECKS: &[Check] = &[
+  Check {
+    id: "fd",
+    label: "fd (fast file finder)",
+    probe: fd_probe,
+    install_commands: &["brew install fd"],
+    docs_url: Some("https://github.com/sharkdp/fd"),
+  },
+  Check {
+    id: "jetbrains-nerd-font",
+    label: "JetBrains Mono Nerd Font",
+    probe: nerd_font_probe,
+    install_commands: &["brew install --cask font-jetbrains-mono-nerd-font"],
+    docs_url: Some("https://www.nerdfonts.com/"),
+  },
+];
+
+#[derive(Clone, Default)]
+struct ResolvedTools {
+  fd: Option<String>,
+}
+
+type SharedTools = Arc<Mutex<ResolvedTools>>;
+
+fn derive_resolved_tools(report: &Report) -> ResolvedTools {
+  let mut tools = ResolvedTools::default();
+  for result in &report.results {
+    if result.id == "fd" {
+      if matches!(result.status, preflight::Status::Ok) {
+        tools.fd = result.detail.clone();
+      }
+    }
+  }
+  tools
+}
+
+#[tauri::command]
+fn preflight(state: tauri::State<'_, SharedTools>) -> Report {
+  let report = preflight::run(CHECKS);
+  let mut tools = state.lock().unwrap();
+  *tools = derive_resolved_tools(&report);
+  report
+}
+
 fn main() {
   let context = tauri::generate_context!();
+
+  let tools: SharedTools = Arc::new(Mutex::new(ResolvedTools::default()));
+  // Probe eagerly so the JS preflight call sees the same result the
+  // backend will use. The JS will re-invoke `preflight` and pick up any
+  // changes if the user clicks "Recheck".
+  {
+    let report = preflight::run(CHECKS);
+    *tools.lock().unwrap() = derive_resolved_tools(&report);
+  }
+
+  let tools_for_setup = tools.clone();
 
   tauri::Builder::default()
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_process::init())
+    .manage(tools.clone())
+    .invoke_handler(tauri::generate_handler![preflight])
     .menu(|handle| {
       Menu::with_items(
         handle,
@@ -36,11 +105,12 @@ fn main() {
         )?],
       )
     })
-    .setup(|app| {
+    .setup(move |app| {
       let window = app.get_webview_window("main").unwrap();
       let window_for_callback = window.clone();
+      let tools_for_callback = tools_for_setup.clone();
       window.once("frontend-ready", move |_| {
-        bootstrap(window_for_callback);
+        bootstrap(window_for_callback, tools_for_callback);
       });
       Ok(())
     })
@@ -48,7 +118,7 @@ fn main() {
     .expect("failed to run app");
 }
 
-fn bootstrap(window: WebviewWindow<Wry>) {
+fn bootstrap(window: WebviewWindow<Wry>, tools: SharedTools) {
   let window_ = window.clone();
   let window_terminal = window.clone();
   let window_open_project = window.clone();
@@ -57,6 +127,9 @@ fn bootstrap(window: WebviewWindow<Wry>) {
   let window_receive_fuzzy_find_results = window.clone();
   let window_receive_fuzzy_find_projects_results = window.clone();
   let window_create_file = window.clone();
+
+  let tools_for_fuzzy = tools.clone();
+  let tools_for_projects = tools.clone();
 
   // Start file tree worker
   let (filetree_tx, filetree_rx): (Sender<FileTreeAndFlat>, Receiver<FileTreeAndFlat>) =
@@ -82,10 +155,12 @@ fn bootstrap(window: WebviewWindow<Wry>) {
   window.listen("requestFuzzyFindInProjectFileOrDirectory", move |event| {
     let v: Value = serde_json::from_str(event.payload()).unwrap();
 
+    let resolved = tools_for_fuzzy.lock().unwrap().clone();
     window_receive_fuzzy_find_results
       .emit(
         "receiveFuzzyFindResults",
         find_in_project_file_or_directory(
+          &resolved,
           v["directory"].as_str().unwrap_or(""),
           v["file_or_directory_name"].as_str().unwrap_or(""),
         ),
@@ -96,8 +171,9 @@ fn bootstrap(window: WebviewWindow<Wry>) {
   window.listen("requestFuzzyFindProjects", move |event| {
     let project: String = serde_json::from_str(event.payload()).unwrap();
 
+    let resolved = tools_for_projects.lock().unwrap().clone();
     window_receive_fuzzy_find_projects_results
-      .emit("receiveFuzzyFindResults", find_project(&project))
+      .emit("receiveFuzzyFindResults", find_project(&resolved, &project))
       .expect("failed to emit receiveFuzzyFindResults")
   });
 
@@ -250,20 +326,13 @@ fn start_terminal(window: &WebviewWindow<Wry>, directory: String) {
   });
 }
 
-fn fd_path() -> Option<String> {
-  // Apps launched from /Applications inherit launchd's stripped PATH, so
-  // bare `fd` won't resolve. Probe the usual install locations first.
-  for candidate in ["/opt/homebrew/bin/fd", "/usr/local/bin/fd", "/usr/bin/fd"] {
-    if std::path::Path::new(candidate).exists() {
-      return Some(candidate.to_string());
-    }
-  }
-  None
-}
-
-fn find_in_project_file_or_directory(directory: &str, file_or_directory_name: &str) -> Vec<String> {
-  let Some(fd) = fd_path() else {
-    eprintln!("fd not found on PATH; install with `brew install fd`");
+fn find_in_project_file_or_directory(
+  tools: &ResolvedTools,
+  directory: &str,
+  file_or_directory_name: &str,
+) -> Vec<String> {
+  let Some(fd) = tools.fd.as_ref() else {
+    eprintln!("fd not resolved; preflight should have blocked startup");
     return vec![];
   };
 
@@ -291,9 +360,9 @@ fn find_in_project_file_or_directory(directory: &str, file_or_directory_name: &s
   }
 }
 
-fn find_project(project_name: &str) -> Vec<String> {
-  let Some(fd) = fd_path() else {
-    eprintln!("fd not found on PATH; install with `brew install fd`");
+fn find_project(tools: &ResolvedTools, project_name: &str) -> Vec<String> {
+  let Some(fd) = tools.fd.as_ref() else {
+    eprintln!("fd not resolved; preflight should have blocked startup");
     return vec![];
   };
 
@@ -319,5 +388,67 @@ fn find_project(project_name: &str) -> Vec<String> {
       eprintln!("fd execution failed: {:?}", e);
       vec![]
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn find_in_project_returns_empty_when_fd_unresolved() {
+    let tools = ResolvedTools { fd: None };
+    let result = find_in_project_file_or_directory(&tools, "/tmp", "foo");
+    assert!(result.is_empty());
+  }
+
+  #[test]
+  fn find_in_project_returns_empty_for_empty_directory() {
+    let tools = ResolvedTools {
+      fd: Some("/opt/homebrew/bin/fd".to_string()),
+    };
+    let result = find_in_project_file_or_directory(&tools, "", "foo");
+    assert!(result.is_empty());
+  }
+
+  #[test]
+  fn find_project_returns_empty_when_fd_unresolved() {
+    let tools = ResolvedTools { fd: None };
+    let result = find_project(&tools, "some-project");
+    assert!(result.is_empty());
+  }
+
+  #[test]
+  fn derive_resolved_tools_pulls_fd_path_from_ok_status() {
+    let report = Report {
+      all_ok: true,
+      results: vec![preflight::CheckResult {
+        id: "fd".to_string(),
+        label: "fd".to_string(),
+        status: preflight::Status::Ok,
+        detail: Some("/opt/homebrew/bin/fd".to_string()),
+        install_commands: vec![],
+        docs_url: None,
+      }],
+    };
+    let resolved = derive_resolved_tools(&report);
+    assert_eq!(resolved.fd.as_deref(), Some("/opt/homebrew/bin/fd"));
+  }
+
+  #[test]
+  fn derive_resolved_tools_leaves_fd_none_when_missing() {
+    let report = Report {
+      all_ok: false,
+      results: vec![preflight::CheckResult {
+        id: "fd".to_string(),
+        label: "fd".to_string(),
+        status: preflight::Status::Missing,
+        detail: None,
+        install_commands: vec!["brew install fd".to_string()],
+        docs_url: None,
+      }],
+    };
+    let resolved = derive_resolved_tools(&report);
+    assert!(resolved.fd.is_none());
   }
 }
