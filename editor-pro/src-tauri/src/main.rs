@@ -62,10 +62,25 @@ fn get_recent_projects(recents: tauri::State<'_, SharedRecents>) -> Vec<String> 
   recents.lock().unwrap().prune_missing()
 }
 
-/// Refuse to read files larger than this — they freeze JSON serialization
-/// and the Elm renderer. Most code files are well under 1 MB; this leaves
-/// plenty of headroom for generated artifacts users sometimes inspect.
-const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+/// Tall files (e.g., 50k narrow lines) produce a virtual DOM tree that
+/// Elm's diff has to walk on every keystroke. Hard cap on line count
+/// keeps interactive latency bounded; for longer files, suggest a real
+/// editor (vim/less/etc.).
+const MAX_FILE_LINES: usize = 10_000;
+
+/// Minified bundles, embedded sourcemaps, and packed data files cram a
+/// huge amount of text onto one line. They sail past the line-count cap
+/// (one line!) but rendering that single span chokes the editor. 250
+/// chars comfortably covers hand-written code (style guides land at
+/// 80–120) and most JSON blobs while being well below anything minified.
+const MAX_LINE_LENGTH: usize = 250;
+
+/// Byte cap derived from the line and length caps: no file with both
+/// `MAX_FILE_LINES` lines of `MAX_LINE_LENGTH` chars can exceed this
+/// (each line plus its trailing newline). Lets us reject oversize files
+/// at stat time without reading them. Keeping it derived also prevents
+/// drift between the three caps as the others are tuned.
+const MAX_FILE_BYTES: u64 = (MAX_FILE_LINES as u64) * (MAX_LINE_LENGTH as u64 + 1);
 
 fn emit_notification(window: &WebviewWindow<Wry>, type_: &str, message: String) {
   let payload = serde_json::json!({
@@ -82,12 +97,19 @@ fn emit_notification(window: &WebviewWindow<Wry>, type_: &str, message: String) 
 enum LoadDecision {
   Ok(String),
   TooLarge { size: u64, limit: u64 },
+  TooManyLines { lines: usize, limit: usize },
+  LineTooLong { length: usize, limit: usize },
   NotAFile,
   StatError(String),
   ReadError(String),
 }
 
-fn load_file_with_cap(path: &str, limit: u64) -> LoadDecision {
+fn load_file_with_cap(
+  path: &str,
+  byte_limit: u64,
+  line_limit: usize,
+  line_length_limit: usize,
+) -> LoadDecision {
   let meta = match metadata(path) {
     Ok(m) => m,
     Err(e) => return LoadDecision::StatError(e.to_string()),
@@ -96,13 +118,31 @@ fn load_file_with_cap(path: &str, limit: u64) -> LoadDecision {
     return LoadDecision::NotAFile;
   }
   let size = meta.len();
-  if size > limit {
-    return LoadDecision::TooLarge { size, limit };
+  if size > byte_limit {
+    return LoadDecision::TooLarge { size, limit: byte_limit };
   }
-  match fs::read_to_string(path) {
-    Ok(c) => LoadDecision::Ok(c),
-    Err(e) => LoadDecision::ReadError(e.to_string()),
+  let contents = match fs::read_to_string(path) {
+    Ok(c) => c,
+    Err(e) => return LoadDecision::ReadError(e.to_string()),
+  };
+  // Single-pass scan: track both line count and max line length so we
+  // catch minified one-liners (under the line cap, way over the length
+  // cap) and tall files in one walk.
+  let mut line_count = 0usize;
+  let mut max_length = 0usize;
+  for line in contents.lines() {
+    line_count += 1;
+    if line.len() > max_length {
+      max_length = line.len();
+    }
   }
+  if max_length > line_length_limit {
+    return LoadDecision::LineTooLong { length: max_length, limit: line_length_limit };
+  }
+  if line_count > line_limit {
+    return LoadDecision::TooManyLines { lines: line_count, limit: line_limit };
+  }
+  LoadDecision::Ok(contents)
 }
 
 fn fd_probe() -> ProbeOutcome {
@@ -315,7 +355,7 @@ fn bootstrap(
 
   window.listen("activateFileOrDirectory", move |event| {
     let filename: String = serde_json::from_str(event.payload()).unwrap();
-    match load_file_with_cap(&filename, MAX_FILE_BYTES) {
+    match load_file_with_cap(&filename, MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH) {
       LoadDecision::Ok(contents) => {
         window_receive_activated_file
           .emit(
@@ -332,12 +372,28 @@ fn bootstrap(
       }
       LoadDecision::TooLarge { size, limit } => emit_notification(
         &window_receive_activated_file,
-        "error",
+        "info",
         format!(
-          "{} is {:.1} MB; the editor refuses files larger than {} MB to avoid hanging.",
+          "{} is {:.1} MB — too large for the editor to load smoothly (cap is {:.1} MB). For files this size, try vim or less.",
           filename,
           size as f64 / 1_048_576.0,
-          limit / 1_048_576,
+          limit as f64 / 1_048_576.0,
+        ),
+      ),
+      LoadDecision::TooManyLines { lines, limit } => emit_notification(
+        &window_receive_activated_file,
+        "info",
+        format!(
+          "{} has {} lines — the editor is tuned for files under {}. For longer files, vim or less will work better.",
+          filename, lines, limit,
+        ),
+      ),
+      LoadDecision::LineTooLong { length, limit } => emit_notification(
+        &window_receive_activated_file,
+        "info",
+        format!(
+          "{} contains a {}-character line (cap is {}), typical of minified bundles or generated code. The editor would lock up rendering it — try opening it in vim or less.",
+          filename, length, limit,
         ),
       ),
       LoadDecision::StatError(e) => emit_notification(
@@ -620,7 +676,7 @@ mod tests {
     let tmp = std::env::temp_dir().join(format!("editor-pro-load-ok-{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     std::fs::write(&tmp, b"hello").unwrap();
-    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024);
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024, 100, 1000);
     assert_eq!(result, LoadDecision::Ok("hello".to_string()));
     let _ = std::fs::remove_file(&tmp);
   }
@@ -630,8 +686,45 @@ mod tests {
     let tmp = std::env::temp_dir().join(format!("editor-pro-load-big-{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     std::fs::write(&tmp, vec![b'a'; 2048]).unwrap();
-    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024);
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024, 100, 1000);
     assert!(matches!(result, LoadDecision::TooLarge { size: 2048, limit: 1024 }));
+    let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[test]
+  fn load_file_with_cap_rejects_too_many_lines() {
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-tall-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let body = "x\n".repeat(50);
+    std::fs::write(&tmp, body.as_bytes()).unwrap();
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024, 10, 1000);
+    assert!(matches!(result, LoadDecision::TooManyLines { lines: 50, limit: 10 }));
+    let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[test]
+  fn load_file_with_cap_rejects_minified_one_liner() {
+    // 5000 chars on a single line — catches minified bundles even though
+    // line count is just 1.
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-minified-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let body: String = std::iter::repeat('x').take(5000).collect();
+    std::fs::write(&tmp, body.as_bytes()).unwrap();
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1_000_000, 1000, 1000);
+    assert!(matches!(result, LoadDecision::LineTooLong { length: 5000, limit: 1000 }));
+    let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[test]
+  fn load_file_with_cap_allows_normal_code_lines() {
+    // A file with sensible code lines (a few hundred chars each) should
+    // not trip the length cap.
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-normal-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let body = "fn hello() { println!(\"world\"); }\n".repeat(20);
+    std::fs::write(&tmp, body.as_bytes()).unwrap();
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024, 1000, 1000);
+    assert!(matches!(result, LoadDecision::Ok(_)));
     let _ = std::fs::remove_file(&tmp);
   }
 
@@ -640,14 +733,14 @@ mod tests {
     let tmp = std::env::temp_dir().join(format!("editor-pro-load-dir-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
-    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024);
+    let result = load_file_with_cap(tmp.to_str().unwrap(), 1024, 100, 1000);
     assert_eq!(result, LoadDecision::NotAFile);
     let _ = std::fs::remove_dir_all(&tmp);
   }
 
   #[test]
   fn load_file_with_cap_returns_stat_error_for_missing_path() {
-    let result = load_file_with_cap("/nope/this/does/not/exist/xyzzy", 1024);
+    let result = load_file_with_cap("/nope/this/does/not/exist/xyzzy", 1024, 100, 1000);
     assert!(matches!(result, LoadDecision::StatError(_)));
   }
 
