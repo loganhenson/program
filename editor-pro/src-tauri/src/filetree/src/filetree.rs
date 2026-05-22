@@ -142,19 +142,26 @@ fn directory_tree(
       type_: FileOrDirectoryType::Directory,
     });
 
-    item.children = WalkDir::new(directory)
-      .min_depth(1)
-      .max_depth(1)
-      .follow_links(false)
-      .into_iter()
-      .filter_map(|e| e.ok())
-      .map(|entry| {
-        if state.at_limit() {
-          return None;
-        }
-        directory_tree(entry.path().display().to_string(), add_to_flat, state)
-      })
-      .collect();
+    // Collect via filter_map so a child returning None (typically because
+    // MAX_ENTRIES was reached deep in the walk) doesn't short-circuit the
+    // whole .collect::<Option<Vec<_>>>() to None. That bug surfaced as the
+    // ROOT being reported with children=None, which the Elm view renders
+    // as a file instead of an empty directory.
+    item.children = Some(
+      WalkDir::new(directory)
+        .min_depth(1)
+        .max_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter_map(|entry| {
+          if state.at_limit() {
+            return None;
+          }
+          directory_tree(entry.path().display().to_string(), add_to_flat, state)
+        })
+        .collect(),
+    );
   } else {
     return None;
   }
