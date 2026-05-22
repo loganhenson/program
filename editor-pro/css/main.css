@@ -5,5 +5,13 @@
 
 @import "tailwindcss/utilities";
 
+/* Kill the macOS rubber-band scroll on every scroll container — this is
+   a native app, not a web page, and the bounce makes the UI feel like
+   it's loose in its frame. `none` is stronger than `contain`: it also
+   stops the gesture from triggering the OS-level pull animation. */
+html, body, * {
+  overscroll-behavior: none;
+}
+
 
 

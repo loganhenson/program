@@ -1148,17 +1148,16 @@ viewTerminalPane ws =
                 -- are clipped to the rounded corners instead of bleeding
                 -- past them with sharp edges.
                 , style "overflow" "hidden"
-                -- Use inset box-shadow instead of CSS border so the ring
-                -- renders reliably along the rounded bottom corners (the
-                -- border-color was being lost on the curve in Wry).
-                , style "box-shadow"
-                    (if ws.focused == Terminal then
-                        "inset 0 0 0 1px #60a5fa"
-
-                     else
-                        "inset 0 0 0 1px #8f99ab42"
-                    )
-                , class "w-full"
+                -- Real CSS border (not box-shadow inset) — inset shadow
+                -- renders BEHIND child content and gets covered up by
+                -- the tab strip + terminal view. With the 8px radius
+                -- inside the 10px macOS curve, the border stays visible
+                -- around the entire perimeter including the corners.
+                , classList
+                    [ ( "border-blue-400", ws.focused == Terminal )
+                    , ( "border-lightgray-transparent", ws.focused /= Terminal )
+                    ]
+                , class "border w-full"
                 ]
                 [ terminalTabBar ws
                 , div
