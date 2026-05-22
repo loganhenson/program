@@ -1,5 +1,8 @@
+mod recent_projects;
+
 use filetree::filetree::{File, FileTreeAndFlat};
 use preflight::{Check, ProbeOutcome, Report};
+use recent_projects::{RecentProjects, STORE_FILE, STORE_KEY};
 use serde_json::{self, Value};
 use std::{
   env, fs,
@@ -14,9 +17,50 @@ use std::{
 };
 use tauri::{
   menu::{Menu, PredefinedMenuItem, Submenu},
-  Emitter, Listener, Manager, WebviewWindow, Wry,
+  AppHandle, Emitter, Listener, Manager, WebviewWindow, Wry,
 };
+use tauri_plugin_store::StoreExt;
 use terminal::{parse::TerminalCommand, terminal::Size};
+
+type SharedRecents = Arc<Mutex<RecentProjects>>;
+
+fn load_recents(app: &AppHandle<Wry>) -> SharedRecents {
+  let paths = match app.store(STORE_FILE) {
+    Ok(store) => store
+      .get(STORE_KEY)
+      .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+      .unwrap_or_default(),
+    Err(e) => {
+      eprintln!("recent-projects store unavailable on read: {:?}", e);
+      vec![]
+    }
+  };
+  Arc::new(Mutex::new(RecentProjects::from_paths(paths)))
+}
+
+fn save_recents(app: &AppHandle<Wry>, recents: &SharedRecents) {
+  let snapshot: Vec<String> = recents.lock().unwrap().paths().to_vec();
+  match app.store(STORE_FILE) {
+    Ok(store) => {
+      store.set(STORE_KEY, serde_json::to_value(snapshot).unwrap());
+      if let Err(e) = store.save() {
+        eprintln!("recent-projects store save failed: {:?}", e);
+      }
+    }
+    Err(e) => {
+      eprintln!("recent-projects store unavailable on save: {:?}", e);
+    }
+  }
+}
+
+fn home_dir() -> PathBuf {
+  PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()))
+}
+
+#[tauri::command]
+fn get_recent_projects(recents: tauri::State<'_, SharedRecents>) -> Vec<String> {
+  recents.lock().unwrap().prune_missing()
+}
 
 fn fd_probe() -> ProbeOutcome {
   preflight::probe_binary("fd")
@@ -87,8 +131,10 @@ fn main() {
   tauri::Builder::default()
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_store::Builder::default().build())
     .manage(tools.clone())
-    .invoke_handler(tauri::generate_handler![preflight])
+    .invoke_handler(tauri::generate_handler![preflight, get_recent_projects])
     .menu(|handle| {
       Menu::with_items(
         handle,
@@ -106,11 +152,22 @@ fn main() {
       )
     })
     .setup(move |app| {
+      let app_handle = app.handle().clone();
+      let recents = load_recents(&app_handle);
+      app.manage(recents.clone());
+
       let window = app.get_webview_window("main").unwrap();
       let window_for_callback = window.clone();
       let tools_for_callback = tools_for_setup.clone();
+      let recents_for_callback = recents.clone();
+      let app_for_callback = app_handle.clone();
       window.once("frontend-ready", move |_| {
-        bootstrap(window_for_callback, tools_for_callback);
+        bootstrap(
+          window_for_callback,
+          tools_for_callback,
+          recents_for_callback,
+          app_for_callback,
+        );
       });
       Ok(())
     })
@@ -118,7 +175,12 @@ fn main() {
     .expect("failed to run app");
 }
 
-fn bootstrap(window: WebviewWindow<Wry>, tools: SharedTools) {
+fn bootstrap(
+  window: WebviewWindow<Wry>,
+  tools: SharedTools,
+  recents: SharedRecents,
+  app: AppHandle<Wry>,
+) {
   let window_ = window.clone();
   let window_terminal = window.clone();
   let window_open_project = window.clone();
@@ -130,6 +192,9 @@ fn bootstrap(window: WebviewWindow<Wry>, tools: SharedTools) {
 
   let tools_for_fuzzy = tools.clone();
   let tools_for_projects = tools.clone();
+  let recents_for_open = recents.clone();
+  let recents_for_projects = recents.clone();
+  let app_for_open = app.clone();
 
   // Start file tree worker
   let (filetree_tx, filetree_rx): (Sender<FileTreeAndFlat>, Receiver<FileTreeAndFlat>) =
@@ -172,8 +237,15 @@ fn bootstrap(window: WebviewWindow<Wry>, tools: SharedTools) {
     let project: String = serde_json::from_str(event.payload()).unwrap();
 
     let resolved = tools_for_projects.lock().unwrap().clone();
+    let roots = recents_for_projects
+      .lock()
+      .unwrap()
+      .project_search_roots(&home_dir());
     window_receive_fuzzy_find_projects_results
-      .emit("receiveFuzzyFindResults", find_project(&resolved, &project))
+      .emit(
+        "receiveFuzzyFindResults",
+        find_project(&resolved, &project, &roots),
+      )
       .expect("failed to emit receiveFuzzyFindResults")
   });
 
@@ -188,6 +260,9 @@ fn bootstrap(window: WebviewWindow<Wry>, tools: SharedTools) {
       .unwrap();
 
     println!("requestOpenProject dir: {:?}", dir);
+
+    recents_for_open.lock().unwrap().record(&dir);
+    save_recents(&app_for_open, &recents_for_open);
 
     start_terminal(&window_open_project, dir.clone());
     window_open_project
@@ -264,6 +339,9 @@ fn bootstrap(window: WebviewWindow<Wry>, tools: SharedTools) {
         .unwrap();
       println!("dir: {:?}", dir);
 
+      recents.lock().unwrap().record(&dir);
+      save_recents(&app, &recents);
+
       start_terminal(&window_terminal, dir.clone());
       window_.emit("initialize", dir).expect("failed to emit");
     }
@@ -271,15 +349,20 @@ fn bootstrap(window: WebviewWindow<Wry>, tools: SharedTools) {
       match env::var("DEV_DIRECTORY") {
         Ok(dir) => {
           println!("dev mode, using {:?}", dir);
-          fs::canonicalize(PathBuf::from(&dir))
+          let canonical = fs::canonicalize(PathBuf::from(&dir))
             .unwrap()
             .into_os_string()
             .into_string()
             .unwrap();
 
+          recents.lock().unwrap().record(&canonical);
+          save_recents(&app, &recents);
+
           // Start the terminal in the working directory
-          start_terminal(&window_terminal, dir.clone());
-          window_.emit("initialize", &dir).expect("failed to emit")
+          start_terminal(&window_terminal, canonical.clone());
+          window_
+            .emit("initialize", &canonical)
+            .expect("failed to emit")
         }
         Err(_) => {
           println!("need a project!");
@@ -360,36 +443,48 @@ fn find_in_project_file_or_directory(
   }
 }
 
-fn find_project(tools: &ResolvedTools, project_name: &str) -> Vec<String> {
+fn find_project(
+  tools: &ResolvedTools,
+  project_name: &str,
+  search_roots: &[PathBuf],
+) -> Vec<String> {
   let Some(fd) = tools.fd.as_ref() else {
     eprintln!("fd not resolved; preflight should have blocked startup");
     return vec![];
   };
 
-  let home = std::env::var("HOME").unwrap();
-  let desktop = format!("{}/Desktop", home);
+  let pattern = format!("^{}", project_name);
+  let mut results: Vec<String> = vec![];
 
-  // ~/Desktop on this machine is a symlink to OneDrive, so we need -L. Match by
-  // name prefix at depth 1 — projects live as direct children of Desktop.
-  let args = [
-    "--type=d",
-    "--max-depth=1",
-    "-L",
-    &format!("^{}", project_name),
-    &desktop,
-  ];
+  // -L follows symlinks because common project parents (e.g. a ~/Desktop
+  // shimmed onto a cloud-sync mount) are often symlinks. Depth 1 keeps the
+  // scan cheap — projects are direct children of the search root.
+  for root in search_roots {
+    let root_str = match root.to_str() {
+      Some(s) => s,
+      None => continue,
+    };
+    let args: [&str; 5] = ["--type=d", "--max-depth=1", "-L", &pattern, root_str];
 
-  match Command::new(fd).args(args).output() {
-    Ok(output) => String::from_utf8_lossy(&output.stdout)
-      .lines()
-      .map(|s| s.to_string())
-      .collect(),
-    Err(e) => {
-      eprintln!("fd execution failed: {:?}", e);
-      vec![]
+    match Command::new(fd).args(args).output() {
+      Ok(output) => results.extend(
+        String::from_utf8_lossy(&output.stdout)
+          .lines()
+          .map(|s| s.to_string()),
+      ),
+      Err(e) => {
+        eprintln!("fd execution failed for root {}: {:?}", root_str, e);
+      }
     }
   }
+
+  // Dedupe while preserving order (different roots can yield the same
+  // canonical project via symlinks)
+  let mut seen = std::collections::HashSet::new();
+  results.retain(|p| seen.insert(p.clone()));
+  results
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -414,7 +509,17 @@ mod tests {
   #[test]
   fn find_project_returns_empty_when_fd_unresolved() {
     let tools = ResolvedTools { fd: None };
-    let result = find_project(&tools, "some-project");
+    let roots = vec![PathBuf::from("/tmp")];
+    let result = find_project(&tools, "some-project", &roots);
+    assert!(result.is_empty());
+  }
+
+  #[test]
+  fn find_project_returns_empty_with_no_search_roots() {
+    let tools = ResolvedTools {
+      fd: Some("/opt/homebrew/bin/fd".to_string()),
+    };
+    let result = find_project(&tools, "anything", &[]);
     assert!(result.is_empty());
   }
 
