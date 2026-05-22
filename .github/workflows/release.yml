@@ -14,6 +14,10 @@ concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
+# Opt JS-based actions onto Node 24 ahead of the June 2026 default switch
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build ${{ matrix.app }} (arm64 DMG)
@@ -31,7 +35,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: ${{ matrix.app }}/package-lock.json
 
