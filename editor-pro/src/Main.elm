@@ -1128,8 +1128,14 @@ viewTerminalPane ws =
                 , style "display" "flex"
                 , style "flex-direction" "column"
                 , style "background" "#262626"
-                , style "border-bottom-left-radius" "12px"
-                , style "border-bottom-right-radius" "12px"
+                -- macOS Tahoe window corner ~= 10pt; the radius needs to
+                -- match or the OS clip slices the bottom of the pane.
+                , style "border-bottom-left-radius" "10px"
+                , style "border-bottom-right-radius" "10px"
+                -- overflow:hidden so the inner terminal view + scrollbar
+                -- are clipped to the rounded corners instead of bleeding
+                -- past them with sharp edges.
+                , style "overflow" "hidden"
                 , classList
                     [ ( "border-blue-400", ws.focused == Terminal )
                     , ( "border-lightgray-transparent", ws.focused /= Terminal )
