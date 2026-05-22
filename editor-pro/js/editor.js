@@ -1,5 +1,7 @@
 import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
 import {readText, writeText} from "@tauri-apps/plugin-clipboard-manager";
+import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 
 // import {listen} from "@tauri-apps/api/event";
 
@@ -241,13 +243,27 @@ export default {
 
     window.vide.ports.requestFuzzyFindProjects.subscribe(async (projectName) => {
       emit('requestFuzzyFindProjects', projectName)
-      // if (!this.data.fuzzyFinder) {
-      //   const fuzzyFinder = await import('./features/fuzzyFinder.js')
-      //   this.data.fuzzyFinder = fuzzyFinder.default
-      // }
-      //
-      // const projects = await this.data.fuzzyFinder.findProject(projectName)
-      // window.vide.ports.receiveFuzzyFindResults.send(projects)
+    })
+
+    window.vide.ports.requestPickProjectFolder.subscribe(async () => {
+      try {
+        const picked = await openFolderDialog({ directory: true, multiple: false })
+        // Tauri returns null when the user cancels
+        window.vide.ports.receivePickedProjectFolder.send(picked ?? null)
+      } catch (e) {
+        console.error('folder dialog failed', e)
+        window.vide.ports.receivePickedProjectFolder.send(null)
+      }
+    })
+
+    window.vide.ports.requestRecentProjects.subscribe(async () => {
+      try {
+        const list = await invoke('get_recent_projects')
+        window.vide.ports.receiveRecentProjects.send(list)
+      } catch (e) {
+        console.error('get_recent_projects failed', e)
+        window.vide.ports.receiveRecentProjects.send([])
+      }
     })
 
     window.vide.ports.requestChange.subscribe((contents) => {

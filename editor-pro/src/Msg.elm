@@ -29,3 +29,6 @@ type Msg
     | FocusFileTree
     | FocusTerminal
     | RawKeyboardMsg RawKeyboard.Msg
+    | RequestPickProjectFolder
+    | PickedProjectFolder (Maybe String)
+    | ReceivedRecentProjects (List String)

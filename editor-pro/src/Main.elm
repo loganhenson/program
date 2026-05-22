@@ -26,6 +26,7 @@ import Ports
 import Terminal
 import Terminal.Types
 import Types exposing (Focused(..), VideErrorType(..))
+import Welcome.Welcome
 
 
 type alias Flags =
@@ -58,13 +59,17 @@ init { activeFile, files } =
       , focused = FileTree
       , fuzzyFinder = FuzzyFinder.FuzzyFinder.init
       , notifications = []
+      , recentProjects = []
       }
-    , case activeFile of
-        Just file ->
-            Ports.requestActivateFileOrDirectory file
+    , Cmd.batch
+        [ case activeFile of
+            Just file ->
+                Ports.requestActivateFileOrDirectory file
 
-        Nothing ->
-            Cmd.none
+            Nothing ->
+                Cmd.none
+        , Ports.requestRecentProjects ()
+        ]
     )
 
 
@@ -176,6 +181,20 @@ update msg model =
 
         RequestOpenProject directory ->
             Lib.requestOpenProject nextModel directory
+
+        RequestPickProjectFolder ->
+            ( nextModel, Ports.requestPickProjectFolder () )
+
+        PickedProjectFolder maybeDir ->
+            case maybeDir of
+                Just dir ->
+                    Lib.requestOpenProject nextModel dir
+
+                Nothing ->
+                    ( nextModel, Cmd.none )
+
+        ReceivedRecentProjects paths ->
+            ( { nextModel | recentProjects = paths }, Cmd.none )
 
         FuzzyFindInProjectFileOrDirectory string ->
             ( { nextModel | fuzzyFinder = { fuzzyFinder | fuzzyFinderInputValue = string } }, Ports.requestFuzzyFindInProjectFileOrDirectory string )
@@ -324,6 +343,8 @@ subscriptions model =
         , Ports.receiveFuzzyFindResults ReceivedFuzzyFindResults
         , Ports.receiveFileTree ReceivedFileTree
         , Ports.receiveVideError ReceivedVideError
+        , Ports.receivePickedProjectFolder PickedProjectFolder
+        , Ports.receiveRecentProjects ReceivedRecentProjects
         , Sub.map RawKeyboardMsg (RawKeyboard.subscriptions True True)
         ]
 
@@ -389,20 +410,19 @@ viewEditor model =
                 ]
 
         Nothing ->
-            div
-                [ class "flex-1 flex justify-center h-full items-center text-2xl"
-                ]
-                [ text
-                    ("Select a "
-                        ++ (case Maybe.map (.fileTree >> .path) model.fileTree of
-                                Just _ ->
-                                    "file"
+            case Maybe.map (.fileTree >> .path) model.fileTree of
+                Just _ ->
+                    div
+                        [ class "flex-1 flex justify-center h-full items-center text-2xl"
+                        ]
+                        [ text "Select a file" ]
 
-                                Nothing ->
-                                    "project"
-                           )
-                    )
-                ]
+                Nothing ->
+                    Welcome.Welcome.view
+                        { recents = model.recentProjects
+                        , onOpenFolder = RequestPickProjectFolder
+                        , onOpenRecent = RequestOpenProject
+                        }
 
 
 viewFuzzyFinder : Model -> Html.Html Msg

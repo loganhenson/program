@@ -83,6 +83,12 @@ port requestScrollIntoView : String -> Cmd msg
 port requestCharacterWidth : () -> Cmd msg
 
 
+port requestPickProjectFolder : () -> Cmd msg
+
+
+port requestRecentProjects : () -> Cmd msg
+
+
 
 -- Receiving Terminal
 
@@ -134,3 +140,9 @@ port receiveVideError : (Json.Encode.Value -> msg) -> Sub msg
 
 
 port receiveCharacterWidth : (Float -> msg) -> Sub msg
+
+
+port receivePickedProjectFolder : (Maybe String -> msg) -> Sub msg
+
+
+port receiveRecentProjects : (List String -> msg) -> Sub msg

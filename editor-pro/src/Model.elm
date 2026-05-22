@@ -19,4 +19,5 @@ type alias Model =
     , focused : Focused
     , fuzzyFinder : FuzzyFinder.Model.Model
     , notifications : List Notification.Types.Notification
+    , recentProjects : List String
     }
