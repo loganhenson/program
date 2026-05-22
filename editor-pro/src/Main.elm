@@ -23,14 +23,32 @@ import Notification.Decoders exposing (decodeNotification)
 import Notification.Types
 import PortHandlers exposing (editorPorts)
 import Ports
+import Task
 import Terminal
 import Terminal.Types
+import Time
 import Types exposing (Focused(..), VideErrorType(..))
 import Welcome.Welcome
 
 
 type alias Flags =
     { activeFile : Maybe String, files : Maybe Json.Decode.Value }
+
+
+{-| Auto-dismiss notifications after this many milliseconds — append-only
+notification lists used to grow unbounded. Tick polls once a second.
+-}
+notificationTtlMs : Int
+notificationTtlMs =
+    10000
+
+
+{-| FIFO cap on concurrent notifications; protects against a noisy
+backend (build failures, sync errors) overwhelming the model.
+-}
+maxNotifications : Int
+maxNotifications =
+    50
 
 
 init : Flags -> ( Model, Cmd Msg )
@@ -98,15 +116,44 @@ update msg model =
             handleKeybindings nextModel m
 
         DismissNotification notification ->
-            ( { nextModel | notifications = List.filter (\n -> n /= notification) nextModel.notifications }, Cmd.none )
+            ( { nextModel | notifications = List.filter (\( _, n ) -> n /= notification) nextModel.notifications }, Cmd.none )
 
         ReceivedNotification json ->
             case decodeValue decodeNotification json of
                 Ok notification ->
-                    ( { nextModel | notifications = notification :: nextModel.notifications }, Cmd.none )
+                    ( nextModel
+                    , Task.perform (NotificationReceivedAt notification) Time.now
+                    )
 
-                Err err ->
+                Err _ ->
                     ( nextModel, Cmd.none )
+
+        NotificationReceivedAt notification now ->
+            let
+                entry =
+                    ( Time.posixToMillis now, notification )
+            in
+            ( { nextModel
+                | notifications =
+                    (entry :: nextModel.notifications)
+                        |> List.take maxNotifications
+              }
+            , Cmd.none
+            )
+
+        NotificationTick now ->
+            let
+                nowMs =
+                    Time.posixToMillis now
+            in
+            ( { nextModel
+                | notifications =
+                    List.filter
+                        (\( receivedAt, _ ) -> nowMs - receivedAt < notificationTtlMs)
+                        nextModel.notifications
+              }
+            , Cmd.none
+            )
 
         TerminalMsg terminalMsg ->
             case model.terminal of
@@ -345,6 +392,7 @@ subscriptions model =
         , Ports.receiveVideError ReceivedVideError
         , Ports.receivePickedProjectFolder PickedProjectFolder
         , Ports.receiveRecentProjects ReceivedRecentProjects
+        , Time.every 1000 NotificationTick
         , Sub.map RawKeyboardMsg (RawKeyboard.subscriptions True True)
         ]
 
@@ -506,11 +554,11 @@ viewTerminal maybeTerminal focused =
             text ""
 
 
-viewNotifications : List Notification.Types.Notification -> Html.Html Msg
+viewNotifications : List ( Int, Notification.Types.Notification ) -> Html.Html Msg
 viewNotifications notifications =
     div [ class "fixed bottom-0 right-0 w-1/2 m-2" ]
         (List.map
-            (\notification ->
+            (\( _, notification ) ->
                 div [ class "h-32 bg-lightgray p-2 w-full flex flex-col justify-between" ]
                     [ div [ class "flex" ]
                         [ div [ class "mb-2" ] [ text notification.message ]

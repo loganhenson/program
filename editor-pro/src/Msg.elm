@@ -7,6 +7,7 @@ import FileTree.Types
 import Json.Encode
 import Notification.Types
 import Terminal.Types
+import Time
 
 
 type Msg
@@ -32,3 +33,5 @@ type Msg
     | RequestPickProjectFolder
     | PickedProjectFolder (Maybe String)
     | ReceivedRecentProjects (List String)
+    | NotificationReceivedAt Notification.Types.Notification Time.Posix
+    | NotificationTick Time.Posix
