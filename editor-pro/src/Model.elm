@@ -18,6 +18,6 @@ type alias Model =
     , fileTreeShowing : Bool
     , focused : Focused
     , fuzzyFinder : FuzzyFinder.Model.Model
-    , notifications : List Notification.Types.Notification
+    , notifications : List ( Int, Notification.Types.Notification )
     , recentProjects : List String
     }
