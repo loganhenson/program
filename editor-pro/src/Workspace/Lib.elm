@@ -2,9 +2,11 @@ module Workspace.Lib exposing
     ( active
     , addOrFocus
     , empty
+    , findByPath
     , findIndexByPath
     , mapActive
     , mapActiveWithCmd
+    , mapWorkspaceByPath
     , removeAt
     )
 
@@ -75,6 +77,25 @@ empty projectPath =
 findIndexByPath : String -> Model -> Maybe Int
 findIndexByPath path model =
     List.Extra.findIndex (\ws -> ws.projectPath == path) model.workspaces
+
+
+findByPath : String -> Model -> Maybe Workspace
+findByPath path model =
+    List.Extra.find (\ws -> ws.projectPath == path) model.workspaces
+
+
+{-| Apply a pure transform to whichever workspace has `path` as its
+projectPath. Useful for routing incoming Tauri events to the right tab
+regardless of which one is currently active.
+-}
+mapWorkspaceByPath : String -> (Workspace -> Workspace) -> Model -> Model
+mapWorkspaceByPath path f model =
+    case findIndexByPath path model of
+        Just idx ->
+            { model | workspaces = List.Extra.updateAt idx f model.workspaces }
+
+        Nothing ->
+            model
 
 
 {-| If the path is already an open workspace, switch focus to it. Otherwise
