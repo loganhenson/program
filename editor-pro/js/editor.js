@@ -205,6 +205,14 @@ export default {
       this.receiveNotification(event.payload)
     })
 
+    listen('externalFileChange', (event) => {
+      window.vide.ports.receiveExternalFileChange.send(event.payload)
+    })
+
+    listen('externalFileDelete', (event) => {
+      window.vide.ports.receiveExternalFileDelete.send(event.payload.path)
+    })
+
 
     /**
      * Elm initialization

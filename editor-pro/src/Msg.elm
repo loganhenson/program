@@ -35,3 +35,5 @@ type Msg
     | ReceivedRecentProjects (List String)
     | NotificationReceivedAt Notification.Types.Notification Time.Posix
     | NotificationTick Time.Posix
+    | ExternalFileChange Json.Encode.Value
+    | ExternalFileDelete String
