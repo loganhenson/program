@@ -16,6 +16,18 @@ init =
     }
 
 
+{-| Hard cap on how many fuzzy results we render at once. Rendering every
+match is fine when results count in the tens, but searching a large
+monorepo can return thousands; each row is a DOM node and the UI locks
+up well before the user can scroll to the bottom. The Rust side already
+caps at 5000 — this caps the rendered subset to keep the DOM small.
+The user is expected to narrow the query if their target is missing.
+-}
+maxRenderedResults : Int
+maxRenderedResults =
+    200
+
+
 view : Model -> Maybe String -> Html Msg
 view model projectPath =
     viewDialog
@@ -51,6 +63,22 @@ view model projectPath =
 
 viewFuzzyFinderResults : Model -> Maybe String -> Html Msg
 viewFuzzyFinderResults model projectPath =
+    let
+        visible =
+            List.take maxRenderedResults model.fuzzyFindResults
+
+        hidden =
+            List.length model.fuzzyFindResults - List.length visible
+
+        truncationNotice =
+            if hidden > 0 then
+                div
+                    [ class "p-2 text-xs text-gray-400 italic" ]
+                    [ text ("Showing first " ++ String.fromInt maxRenderedResults ++ " of " ++ String.fromInt (List.length model.fuzzyFindResults) ++ " results — narrow the search to see more.") ]
+
+            else
+                text ""
+    in
     div
         [ class "overflow-y-scroll h-full"
         ]
@@ -82,5 +110,6 @@ viewFuzzyFinderResults model projectPath =
                         )
                     ]
             )
-            model.fuzzyFindResults
+            visible
+            ++ [ truncationNotice ]
         )
