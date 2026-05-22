@@ -54,9 +54,20 @@ handleEditorMsg m model =
             ( { model | editor = Just editor, fileTree = model.fileTree }, Cmd.map EditorMsg message )
 
 
+{-| Hard cap on remembered file contents. Each entry holds a full file's
+contents in memory; opening hundreds of files across a session was
+unbounded growth. Oldest entries (tail) are dropped when we exceed this.
+-}
+maxFileHistory : Int
+maxFileHistory =
+    50
+
+
 addToFileHistory : List ( String, String ) -> String -> String -> List ( String, String )
 addToFileHistory fileHistory path contents =
-    (( path, contents ) :: fileHistory) |> List.Extra.uniqueBy first
+    (( path, contents ) :: fileHistory)
+        |> List.Extra.uniqueBy first
+        |> List.take maxFileHistory
 
 
 requestActivateFileOrDirectory : Model -> String -> Bool -> ( Model, Cmd Msg )
