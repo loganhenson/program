@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.2.0). Must already exist on the branch you select.'
+        required: true
+
+# Don't let two releases for the same tag race
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.app }} (arm64 DMG)
+    runs-on: macos-latest  # macos-latest is arm64
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [terminal-pro, editor-pro]
+    permissions:
+      contents: write  # required to attach release assets
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.app }}/src-tauri
+          key: release-${{ matrix.app }}
+
+      - name: Install JS deps
+        working-directory: ${{ matrix.app }}
+        run: npm ci
+
+      - name: Build frontend (elm + js + css)
+        working-directory: ${{ matrix.app }}
+        run: |
+          npm run elm:optimize
+          npm run js
+          npm run css
+
+      # TODO(signing): to enable signed + notarized DMGs, plumb the standard
+      # Apple env vars through here once the repo has Developer ID secrets.
+      # See: https://v2.tauri.app/distribute/sign/macos/
+      # env:
+      #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      #   APPLE_ID: ${{ secrets.APPLE_ID }}
+      #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Build arm64 DMG
+        working-directory: ${{ matrix.app }}
+        run: npx tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: Stage artifact for upload
+        id: stage
+        working-directory: ${{ matrix.app }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
+        run: |
+          # Tauri emits a name like "TerminalPro_0.1.0_aarch64.dmg".
+          # Locate it dynamically so we don't pin to a brittle version string.
+          dmg=$(ls *.dmg | head -n1)
+          if [ -z "$dmg" ]; then
+            echo "No DMG produced!" >&2
+            ls -la
+            exit 1
+          fi
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+          echo "dmg_path=${{ matrix.app }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/$dmg" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          draft: true
+          files: ${{ steps.stage.outputs.dmg_path }}
+          fail_on_unmatched_files: true
+          body: |
+            ## Downloads
+            - **TerminalPro**: download `TerminalPro_*_aarch64.dmg`
+            - **EditorPro**: download `EditorPro_*_aarch64.dmg`
+
+            > **First-time launch on macOS**: these DMGs are unsigned. Right-click the app in Finder → **Open** → confirm "Open" in the Gatekeeper dialog. After the first launch, double-clicking works normally.
+
+            **Requires Apple Silicon (M-series) Mac.** Intel Mac builds are not produced — please open an issue if you need them.
+
+            The app will check for required CLI tools and fonts on first launch and offer install commands if anything is missing.
