@@ -31,9 +31,12 @@ export default {
       directory: null,
     },
     activeFile: null,
+    // Active context updated by Elm via setActiveContext port — JS uses it
+    // to stamp outgoing events (save, run, resize, createFile) with the
+    // right workspaceId/file when the user has multiple project tabs open.
+    activeContext: { workspaceId: null, activeFile: null },
     saved: true,
     diagnostics: {},
-    // Fuzzy Finder Stuff
     fuzzyFinder: null,
   },
   runOpenFileHandlers(filePath, contents) {
@@ -90,23 +93,10 @@ export default {
   },
   async save(emit, contents) {
     emit('save', {
-      file: this.data.activeFile,
+      workspaceId: this.data.activeContext.workspaceId,
+      file: this.data.activeContext.activeFile,
       contents: contents,
     });
-    // if (!this.data.saved) {
-    //   return
-    // }
-    //
-    // this.data.saved = false
-    //
-    // return new Promise(async (resolve, _) => {
-    //   await fs.writeFile(this.data.activeFile, contents)
-    //
-    //   this.data.saved = true
-    //   this.runSaveFileHandlers(this.data.activeFile, contents)
-    //
-    //   resolve()
-    // })
   },
   async startPlugin(pluginName, listen, emit) {
     console.log('startPlugin called', pluginName)
@@ -133,33 +123,35 @@ export default {
     const pluginName = getPluginNameFromFilePath(filePath)
     await this.startPlugin(pluginName)
   },
-  async activateFileOrDirectory(emit, path) {
-    emit('activateFileOrDirectory', path)
+  async activateFileOrDirectory(emit, payload) {
+    // payload is { workspaceId, path } — emitted as-is to Rust
+    emit('activateFileOrDirectory', payload)
   },
   async createFile(emit, file) {
     emit('createFile', {
+      workspaceId: this.data.activeContext.workspaceId,
       directory: this.data.state.directory,
       file,
     })
   },
   async createDirectory(directory) {
     console.log('createDirectory', directory)
-    // await fs.mkdir(directory)
   },
   sendVideError(error) {
     window.vide.ports.receiveVideError.send(error)
   },
   sendOutputToTerminal(output) {
+    // Rust sends { workspaceId, data } — forward the whole envelope so
+    // the Elm side can route the output to the right workspace.
     window.vide.ports.receiveTerminalOutput.send(output)
   },
-  sendResizedToTerminal({height, width}) {
-    window.vide.ports.receiveTerminalResized.send({height, width})
+  sendResizedToTerminal(payload) {
+    // Rust sends { workspaceId, size }
+    window.vide.ports.receiveTerminalResized.send(payload)
   },
-  refreshDirectory(directory) {
-    // ipcRenderer.send('message-to-directory-tree-worker', directory)
-  },
+  refreshDirectory(directory) {},
   initialize(state, listen, emit) {
-    // These two stops the incessant beeping because we are using native hotkeys without native inputs
+    // Suppress incessant beep on macOS for hotkeys without focused input.
     window.onkeyup = event => {
       if (document.activeElement.tagName !== 'INPUT') {
         event.preventDefault();
@@ -171,11 +163,8 @@ export default {
       }
     };
 
-    // Required for plugins
     this.data.state = state
 
-    // Start vide base functionality plugins (terminal, etc.)
-    // Language specific plugins are lazily loaded upon opening a file of that type
     this.startPlugin('terminal', listen, emit)
 
     // Rust debugging
@@ -183,18 +172,17 @@ export default {
       console.log('rust log:', event.payload)
     })
 
-    // Directory tree
     listen('message-from-directory-tree-worker', event => {
       window.vide.ports.receiveFileTree.send(event.payload);
     })
 
-    //
     listen('receiveActivatedFile', (event) => {
         window.vide.ports.receiveActivatedFile.send(event.payload)
-
-        this.data.activeFile = event.payload.path
-
-        // this.runOpenFileHandlers(event.payload.path, event.payload.contents)
+        // payload.path used for the legacy activeFile field (per-app);
+        // multi-workspace routing is handled by Elm via workspaceId.
+        if (event.payload && event.payload.path) {
+          this.data.activeFile = event.payload.path
+        }
     })
 
     listen('receiveFuzzyFindResults', (event) => {
@@ -210,16 +198,14 @@ export default {
     })
 
     listen('externalFileDelete', (event) => {
-      window.vide.ports.receiveExternalFileDelete.send(event.payload.path)
+      window.vide.ports.receiveExternalFileDelete.send(event.payload)
     })
 
 
     /**
-     * Elm initialization
+     * Elm initialization — happens once at app start. `initialized` event
+     * is now emitted by main.js for each opened workspace, not here.
      */
-    if (state.directory) {
-        emit('initialized', state.directory)
-    }
     window.vide = Elm.Main.init({
       flags: {
         activeFile: null,
@@ -230,37 +216,44 @@ export default {
     /**
      * Ports
      */
+    window.vide.ports.setActiveContext.subscribe((ctx) => {
+      // ctx = { workspaceId: String, activeFile: String|null }
+      this.data.activeContext = ctx
+    })
+
     window.vide.ports.requestOpenProject.subscribe((directory) => {
-      emit('requestOpenProject', directory)
-      // ipcRenderer.send('message-to-directory-tree-worker', directory)
+      emit('requestOpenProject', { directory })
+    })
+
+    window.vide.ports.requestCloseWorkspace.subscribe((workspaceId) => {
+      emit('closeWorkspace', { workspaceId })
     })
 
     window.vide.ports.requestRefreshDirectory.subscribe((directory) => {
-      // ipcRenderer.send('message-to-directory-tree-worker', directory)
+      // no-op
     })
 
     window.vide.ports.requestScrollIntoView.subscribe((id) => {
-      // window.requestAnimationFrame(() => window.document.getElementById(id)?.scrollIntoViewIfNeeded())
+      // no-op
     })
 
     window.vide.ports.requestFuzzyFindInProjectFileOrDirectory.subscribe(async (fileOrDirectoryName) => {
-      // Read from this.data.state (live) — capturing `state` here would freeze
-      // the directory at the value used during the *first* editor.initialize
-      // call (which was "" for apps started without DEV_DIRECTORY/arg).
+      const wsId = this.data.activeContext.workspaceId
+      if (!wsId) return
       emit('requestFuzzyFindInProjectFileOrDirectory', {
-        directory: this.data.state.directory,
+        workspaceId: wsId,
+        directory: wsId, // workspaceId is the canonical project path
         file_or_directory_name: fileOrDirectoryName,
       })
     })
 
     window.vide.ports.requestFuzzyFindProjects.subscribe(async (projectName) => {
-      emit('requestFuzzyFindProjects', projectName)
+      emit('requestFuzzyFindProjects', { workspaceId: '', project: projectName })
     })
 
     window.vide.ports.requestPickProjectFolder.subscribe(async () => {
       try {
         const picked = await openFolderDialog({ directory: true, multiple: false })
-        // Tauri returns null when the user cancels
         window.vide.ports.receivePickedProjectFolder.send(picked ?? null)
       } catch (e) {
         console.error('folder dialog failed', e)
@@ -279,19 +272,25 @@ export default {
     })
 
     window.vide.ports.requestChange.subscribe((contents) => {
-      this.runChangeFileHandlers(this.data.activeFile, contents)
+      this.runChangeFileHandlers(this.data.activeContext.activeFile, contents)
     })
 
-    window.vide.ports.requestActivateFileOrDirectory.subscribe((fileOrDirectory) => {
-      this.activateFileOrDirectory(emit, fileOrDirectory)
+    window.vide.ports.requestActivateFileOrDirectory.subscribe((path) => {
+      const wsId = this.data.activeContext.workspaceId
+      if (!wsId) return
+      this.activateFileOrDirectory(emit, { workspaceId: wsId, path })
     })
 
     window.vide.ports.requestRunTerminal.subscribe(({ contents }) => {
-      this.handlers.requestRunTerminal({ contents })
+      this.handlers.requestRunTerminal({
+        workspaceId: this.data.activeContext.workspaceId,
+        contents,
+      })
     })
 
     window.vide.ports.requestPasteTerminal.subscribe(async () => {
       this.handlers.requestRunTerminal({
+        workspaceId: this.data.activeContext.workspaceId,
         contents: await readText(),
       })
     })
@@ -317,6 +316,7 @@ export default {
           prevWidthIncrement = nextWidthIncrement
           prevHeightIncrement = nextHeightIncrement
           this.handlers.requestResizeTerminal({
+            workspaceId: this.data.activeContext.workspaceId,
             width: w,
             height: h,
           })
@@ -335,84 +335,42 @@ export default {
       // Nothing yet.
     })
 
-    /**
-     * requestCompletion
-     */
     window.vide.ports.requestCompletion.subscribe(async (completionRequest) => {
-      this.runRequestCompletionHandlers(this.data.activeFile, completionRequest)
+      this.runRequestCompletionHandlers(this.data.activeContext.activeFile, completionRequest)
     })
 
-    /**
-     * requestSave
-     */
     window.vide.ports.requestSave.subscribe(async (contents) => {
       await this.save(emit, contents)
     })
 
-    /**
-     * requestCopy
-     */
     window.vide.ports.requestCopy.subscribe(async (contents) => {
       await writeText(contents)
     })
 
-    /**
-     * requestPaste
-     */
     window.vide.ports.requestPaste.subscribe(async () => {
       window.vide.ports.receivePaste.send(await readText())
     })
 
     window.vide.ports.requestCreateFile.subscribe(async (file) => {
-      // try {
-        await this.createFile(emit, file)
-        // await this.refreshDirectory(state.directory)
-        // await this.activateFileOrDirectory(emit, file)
-      // } catch (e) {
-      //   if (e.code === 'EISDIR') {
-      //     this.sendVideError({
-      //       type: 'FILE_TREE_CREATE_DIRECTORY_ALREADY_EXISTS',
-      //       message: `There is a clash with a directory named "${path.basename(file)}"!`
-      //     })
-      //   }
-      // }
+      await this.createFile(emit, file)
     })
 
     window.vide.ports.requestCreateDirectory.subscribe(async (directory) => {
       try {
         await this.createDirectory(directory)
         await this.refreshDirectory(state.directory)
-        await this.activateFileOrDirectory(emit, directory)
       } catch (e) {
         if (e.code === 'EEXIST' || e.code === 'EISDIR') {
           this.sendVideError({
             type: 'FILE_TREE_CREATE_DIRECTORY_ALREADY_EXISTS',
-            message: `A directory with name "${path.basename(directory)}" already exists`
+            message: `A directory with name already exists`
           })
         }
       }
     })
 
     window.vide.ports.requestDelete.subscribe(async (filesAndDirectories) => {
-      // await Promise.all(filesAndDirectories.map(async fileOrDirectory => {
-      //   return fileOrDirectory.type === 'directory'
-      //     ? await fs.rmdir(fileOrDirectory.path, { recursive: true })
-      //     : await fs.unlink(fileOrDirectory.path)
-      // }))
-      //
-      // await this.refreshDirectory(state.directory)
+      // no-op for now
     })
   },
-}
-
-function copyToClipboard(contents) {
-  const el = document.createElement('textarea')
-  el.value = contents
-  el.setAttribute('readonly', '')
-  el.style.position = 'absolute'
-  el.style.left = '-9999px'
-  document.body.appendChild(el)
-  el.select()
-  document.execCommand('copy')
-  document.body.removeChild(el)
 }

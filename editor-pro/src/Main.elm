@@ -16,6 +16,7 @@ import Html.Attributes exposing (class, classList, id, style)
 import Html.Events exposing (onClick)
 import Html.Lazy
 import Json.Decode exposing (decodeValue)
+import Json.Encode
 import Keybindings exposing (handleKeybindings)
 import Lib exposing (addToFileHistory, handleEditorMsg, handleFileTreeMsg, requestActivateFileOrDirectory)
 import Model exposing (Model)
@@ -34,6 +35,37 @@ import Tabs.Tabs
 import Welcome.Welcome
 import Workspace.Lib as WL
 import Workspace.Types exposing (Workspace)
+
+
+{-| Push the active workspace's identity + active file to JS so its
+event emitters (save, run, resize, createFile) can stamp outgoing
+events with the right workspaceId.
+-}
+emitActiveContext : Model -> Cmd Msg
+emitActiveContext model =
+    let
+        encoded =
+            case WL.active model of
+                Just ws ->
+                    Json.Encode.object
+                        [ ( "workspaceId", Json.Encode.string ws.projectPath )
+                        , ( "activeFile"
+                          , case ws.activeFile of
+                                Just f ->
+                                    Json.Encode.string f
+
+                                Nothing ->
+                                    Json.Encode.null
+                          )
+                        ]
+
+                Nothing ->
+                    Json.Encode.object
+                        [ ( "workspaceId", Json.Encode.null )
+                        , ( "activeFile", Json.Encode.null )
+                        ]
+    in
+    Ports.setActiveContext encoded
 
 
 type alias Flags =
@@ -170,6 +202,9 @@ update msg model_ =
             )
 
         TerminalMsg terminalMsg ->
+            -- Legacy in-Elm TerminalMsg (synchronous internal terminal lib
+            -- callbacks like keybindings) — applies to the active workspace
+            -- since that's the only one receiving input.
             case WL.active model |> Maybe.andThen .terminal of
                 Nothing ->
                     ( model, Cmd.none )
@@ -182,6 +217,46 @@ update msg model_ =
                     ( WL.mapActive (\w -> { w | terminal = Just nextTerminal }) model
                     , Cmd.map TerminalMsg terminalMsgs
                     )
+
+        TerminalMsgFor workspaceId terminalMsg ->
+            -- Routed terminal event from Rust (output / sendResizedToTerminal).
+            -- Routes to that workspace's terminal regardless of active tab,
+            -- so background project terminals keep their state current.
+            case WL.findByPath workspaceId model |> Maybe.andThen .terminal of
+                Nothing ->
+                    ( model, Cmd.none )
+
+                Just t ->
+                    let
+                        ( nextTerminal, terminalMsgs ) =
+                            Terminal.update terminalMsg t
+                    in
+                    ( WL.mapWorkspaceByPath workspaceId (\w -> { w | terminal = Just nextTerminal }) model
+                    , Cmd.map (TerminalMsgFor workspaceId) terminalMsgs
+                    )
+
+        NoOp ->
+            ( model, Cmd.none )
+
+        WorkspaceInitialized envelope ->
+            case
+                Json.Decode.decodeValue
+                    (Json.Decode.field "workspaceId" Json.Decode.string)
+                    envelope
+            of
+                Ok workspaceId ->
+                    if String.isEmpty workspaceId then
+                        ( model, Cmd.none )
+
+                    else
+                        let
+                            nextModel =
+                                WL.addOrFocus workspaceId model
+                        in
+                        ( nextModel, emitActiveContext nextModel )
+
+                Err _ ->
+                    ( model, Cmd.none )
 
         ReceivedVideError json ->
             case decodeValue decodeVideError json of
@@ -197,83 +272,44 @@ update msg model_ =
                 Err _ ->
                     ( model, Cmd.none )
 
-        ReceivedFileTree fileTreeJson ->
-            case decodeFiles fileTreeJson of
+        ReceivedFileTree envelope ->
+            case decodeWorkspaceFileTreeEnvelope envelope of
                 Err _ ->
                     ( model, Cmd.none )
 
-                Ok treeAndFlat ->
-                    case WL.active model of
-                        Nothing ->
-                            -- No workspace exists yet — create one from the tree
-                            let
-                                ws =
-                                    WL.empty treeAndFlat.tree.path
-                            in
-                            ( { model
-                                | workspaces =
-                                    model.workspaces
-                                        ++ [ { ws
-                                                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
-                                                , terminal = Just (Terminal.init treeAndFlat.tree.path PortHandlers.editorPorts (PortHandlers.terminalPorts treeAndFlat.tree.path))
-                                                , fileTreeShowing = True
-                                                , terminalShowing = True
-                                             }
-                                           ]
-                                , activeIndex = List.length model.workspaces
-                              }
-                            , Ports.requestSetupTerminalResizeObserver ()
-                            )
+                Ok ( workspaceId, treeAndFlat ) ->
+                    let
+                        wasFirstTree =
+                            case WL.findByPath workspaceId model of
+                                Just ws ->
+                                    ws.fileTree == Nothing
 
-                        Just ws ->
-                            case ws.fileTree of
                                 Nothing ->
-                                    -- First file tree for this workspace
-                                    ( WL.mapActive
-                                        (\w ->
-                                            { w
-                                                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
-                                                , terminal = Just (Terminal.init treeAndFlat.tree.path PortHandlers.editorPorts (PortHandlers.terminalPorts treeAndFlat.tree.path))
-                                                , fileTreeShowing = True
-                                                , terminalShowing = True
-                                            }
-                                        )
-                                        model
-                                    , Ports.requestSetupTerminalResizeObserver ()
-                                    )
+                                    False
 
-                                Just oldTree ->
-                                    -- Refreshed file tree
-                                    let
-                                        activeFileDeleted =
-                                            case ws.activeFile of
-                                                Just af ->
-                                                    not (List.member af (List.map .path treeAndFlat.flat))
+                        nextModel =
+                            WL.mapWorkspaceByPath workspaceId (updateWorkspaceFileTree treeAndFlat) model
 
-                                                Nothing ->
-                                                    False
-                                    in
-                                    ( WL.mapActive
-                                        (\w ->
-                                            { w
-                                                | fileTree = Just (FileTree.FileTree.refresh oldTree treeAndFlat)
-                                                , editor =
-                                                    if activeFileDeleted then
-                                                        Nothing
+                        cmds =
+                            if wasFirstTree then
+                                [ Ports.requestSetupTerminalResizeObserver ()
+                                , emitActiveContext nextModel
+                                ]
 
-                                                    else
-                                                        w.editor
-                                            }
-                                        )
-                                        model
-                                    , Cmd.none
-                                    )
+                            else
+                                []
+                    in
+                    ( nextModel, Cmd.batch cmds )
 
         FocusElementByIdResult _ ->
             ( model, Cmd.none )
 
         RequestOpenProject directory ->
-            Lib.requestOpenProject model directory
+            let
+                ( nextModel, cmd ) =
+                    Lib.requestOpenProject model directory
+            in
+            ( nextModel, Cmd.batch [ cmd, emitActiveContext nextModel ] )
 
         RequestPickProjectFolder ->
             ( model, Ports.requestPickProjectFolder () )
@@ -281,7 +317,11 @@ update msg model_ =
         PickedProjectFolder maybeDir ->
             case maybeDir of
                 Just dir ->
-                    Lib.requestOpenProject model dir
+                    let
+                        ( nextModel, cmd ) =
+                            Lib.requestOpenProject model dir
+                    in
+                    ( nextModel, Cmd.batch [ cmd, emitActiveContext nextModel ] )
 
                 Nothing ->
                     ( model, Cmd.none )
@@ -290,33 +330,42 @@ update msg model_ =
             ( { model | recentProjects = paths }, Cmd.none )
 
         ExternalFileChange json ->
-            case Json.Decode.decodeValue decodeJsonFile json of
-                Ok externalFile ->
-                    applyExternalFileChange externalFile model
+            applyExternalFileChange json model
+
+        ExternalFileDelete json ->
+            case
+                Json.Decode.decodeValue
+                    (Json.Decode.map2 Tuple.pair
+                        (Json.Decode.field "workspaceId" Json.Decode.string)
+                        (Json.Decode.field "path" Json.Decode.string)
+                    )
+                    json
+            of
+                Ok ( workspaceId, path ) ->
+                    case WL.findByPath workspaceId model of
+                        Just ws ->
+                            if ws.activeFile == Just path then
+                                let
+                                    nextModel =
+                                        WL.mapWorkspaceByPath workspaceId
+                                            (\w ->
+                                                { w
+                                                    | editor = Nothing
+                                                    , activeFile = Nothing
+                                                    , fileHistory = List.filter (\( p, _ ) -> p /= path) w.fileHistory
+                                                }
+                                            )
+                                            model
+                                in
+                                ( nextModel, emitActiveContext nextModel )
+
+                            else
+                                ( model, Cmd.none )
+
+                        Nothing ->
+                            ( model, Cmd.none )
 
                 Err _ ->
-                    ( model, Cmd.none )
-
-        ExternalFileDelete path ->
-            case WL.active model of
-                Just ws ->
-                    if ws.activeFile == Just path then
-                        ( WL.mapActive
-                            (\w ->
-                                { w
-                                    | editor = Nothing
-                                    , activeFile = Nothing
-                                    , fileHistory = List.filter (\( p, _ ) -> p /= path) w.fileHistory
-                                }
-                            )
-                            model
-                        , Cmd.none
-                        )
-
-                    else
-                        ( model, Cmd.none )
-
-                Nothing ->
                     ( model, Cmd.none )
 
         FuzzyFindInProjectFileOrDirectory string ->
@@ -345,18 +394,45 @@ update msg model_ =
             , Ports.requestFuzzyFindProjects string
             )
 
-        ReceivedFuzzyFindResults results ->
-            ( WL.mapActive
-                (\w ->
-                    let
-                        ff =
-                            w.fuzzyFinder
-                    in
-                    { w | fuzzyFinder = { ff | fuzzyFindResults = results } }
-                )
-                model
-            , Cmd.none
-            )
+        ReceivedFuzzyFindResults envelope ->
+            case
+                Json.Decode.decodeValue
+                    (Json.Decode.map2 Tuple.pair
+                        (Json.Decode.field "workspaceId" Json.Decode.string)
+                        (Json.Decode.field "results" (Json.Decode.list Json.Decode.string))
+                    )
+                    envelope
+            of
+                Ok ( workspaceId, results ) ->
+                    if String.isEmpty workspaceId then
+                        -- Project-search results (from welcome screen) — apply to active
+                        ( WL.mapActive
+                            (\w ->
+                                let
+                                    ff =
+                                        w.fuzzyFinder
+                                in
+                                { w | fuzzyFinder = { ff | fuzzyFindResults = results } }
+                            )
+                            model
+                        , Cmd.none
+                        )
+
+                    else
+                        ( WL.mapWorkspaceByPath workspaceId
+                            (\w ->
+                                let
+                                    ff =
+                                        w.fuzzyFinder
+                                in
+                                { w | fuzzyFinder = { ff | fuzzyFindResults = results } }
+                            )
+                            model
+                        , Cmd.none
+                        )
+
+                Err _ ->
+                    ( model, Cmd.none )
 
         FocusEditor ->
             ( WL.mapActive (\w -> { w | focused = Editor }) model, Cmd.none )
@@ -370,10 +446,18 @@ update msg model_ =
         RequestActivateFileOrDirectory path ->
             requestActivateFileOrDirectory model path True
 
-        ActivateFile jsonFile ->
-            case Json.Decode.decodeValue decodeJsonFile jsonFile of
-                Ok file ->
-                    case WL.active model of
+        ActivateFile envelope ->
+            case
+                Json.Decode.decodeValue
+                    (Json.Decode.map3 (\wsId path contents -> ( wsId, path, contents ))
+                        (Json.Decode.field "workspaceId" Json.Decode.string)
+                        (Json.Decode.field "path" Json.Decode.string)
+                        (Json.Decode.field "contents" Json.Decode.string)
+                    )
+                    envelope
+            of
+                Ok ( workspaceId, path, contents ) ->
+                    case WL.findByPath workspaceId model of
                         Nothing ->
                             ( model, Cmd.none )
 
@@ -382,7 +466,7 @@ update msg model_ =
                                 ( nextFileTree, fileTreeMsgs ) =
                                     case ws.fileTree of
                                         Just tree ->
-                                            FileTree.FileTree.update (FileTree.Types.ActivateFile file.path) tree
+                                            FileTree.FileTree.update (FileTree.Types.ActivateFile path) tree
                                                 |> Tuple.mapFirst Just
 
                                         Nothing ->
@@ -391,13 +475,13 @@ update msg model_ =
                                 ( nextEditor, editorMsgs ) =
                                     case ws.editor of
                                         Just justEditor ->
-                                            Editor.Lib.changeFile justEditor file.path file.contents
+                                            Editor.Lib.changeFile justEditor path contents
 
                                         Nothing ->
                                             ( Editor.Lib.init
                                                 True
-                                                file.path
-                                                file.contents
+                                                path
+                                                contents
                                                 { vimMode = True
                                                 , showLineNumbers = True
                                                 , padBottom = True
@@ -408,19 +492,26 @@ update msg model_ =
                                                 editorPorts
                                             , Cmd.none
                                             )
+
+                                nextModel =
+                                    WL.mapWorkspaceByPath workspaceId
+                                        (\w ->
+                                            { w
+                                                | editor = Just nextEditor
+                                                , fileTree = nextFileTree
+                                                , fileHistory = addToFileHistory w.fileHistory path contents
+                                                , activeFile = Just path
+                                                , focused = Editor
+                                            }
+                                        )
+                                        model
                             in
-                            ( WL.mapActive
-                                (\w ->
-                                    { w
-                                        | editor = Just nextEditor
-                                        , fileTree = nextFileTree
-                                        , fileHistory = addToFileHistory w.fileHistory file.path file.contents
-                                        , activeFile = Just file.path
-                                        , focused = Editor
-                                    }
-                                )
-                                model
-                            , Cmd.batch [ Cmd.map EditorMsg editorMsgs, Cmd.map FileTreeMsg fileTreeMsgs ]
+                            ( nextModel
+                            , Cmd.batch
+                                [ Cmd.map EditorMsg editorMsgs
+                                , Cmd.map FileTreeMsg fileTreeMsgs
+                                , emitActiveContext nextModel
+                                ]
                             )
 
                 Err _ ->
@@ -447,22 +538,15 @@ update msg model_ =
             handleEditorMsg m model
 
         SelectTab idx ->
-            -- Switching tabs re-asks Rust to load that project (single-PR
-            -- intermediate: the Rust side is still single-workspace, so
-            -- we re-open to get its file tree + terminal back. Full state
-            -- preservation across tabs is the next PR.
-            case List.Extra.getAt idx model.workspaces of
-                Just ws ->
-                    if idx == model.activeIndex then
-                        ( disarmAllCloses model, Cmd.none )
+            if idx == model.activeIndex then
+                ( disarmAllCloses model, Cmd.none )
 
-                    else
-                        ( { model | activeIndex = idx } |> disarmAllCloses
-                        , Ports.requestOpenProject ws.projectPath
-                        )
-
-                Nothing ->
-                    ( disarmAllCloses model, Cmd.none )
+            else
+                let
+                    nextModel =
+                        { model | activeIndex = idx } |> disarmAllCloses
+                in
+                ( nextModel, emitActiveContext nextModel )
 
         AddTabRequested ->
             ( disarmAllCloses model, Ports.requestPickProjectFolder () )
@@ -476,28 +560,21 @@ update msg model_ =
             )
 
         CloseConfirmed idx ->
-            -- If closing changes the active workspace, re-open the new
-            -- active project on the Rust side (single-PR intermediate).
-            let
-                prevPath =
-                    WL.active model |> Maybe.map .projectPath
+            case List.Extra.getAt idx model.workspaces of
+                Nothing ->
+                    ( disarmAllCloses model, Cmd.none )
 
-                nextModel =
-                    WL.removeAt idx model |> disarmAllCloses
-
-                nextPath =
-                    WL.active nextModel |> Maybe.map .projectPath
-            in
-            if prevPath == nextPath then
-                ( nextModel, Cmd.none )
-
-            else
-                case nextPath of
-                    Just path ->
-                        ( nextModel, Ports.requestOpenProject path )
-
-                    Nothing ->
-                        ( nextModel, Cmd.none )
+                Just closingWs ->
+                    let
+                        nextModel =
+                            WL.removeAt idx model |> disarmAllCloses
+                    in
+                    ( nextModel
+                    , Cmd.batch
+                        [ Ports.requestCloseWorkspace closingWs.projectPath
+                        , emitActiveContext nextModel
+                        ]
+                    )
 
         DisarmCloseTick ->
             ( disarmAllCloses model, Cmd.none )
@@ -552,17 +629,42 @@ fileTreeSubscriptions =
         ]
 
 
-terminalSubscriptions : Maybe Terminal.Types.Model -> Sub Msg
-terminalSubscriptions maybeTerminal =
-    case maybeTerminal of
-        Just _ ->
-            Sub.batch
-                [ Sub.map TerminalMsg <| Ports.receiveTerminalOutput Terminal.Types.ReceivedTerminalOutput
-                , Sub.map TerminalMsg <| Ports.receiveTerminalResized Terminal.Types.ReceivedTerminalResized
-                ]
+terminalSubscriptions : Sub Msg
+terminalSubscriptions =
+    -- Always subscribed regardless of active workspace — output and resize
+    -- events can arrive for any open workspace (background terminals
+    -- continue running while their tabs are inactive). The decoders pull
+    -- the workspaceId out so we can route to the right workspace's model.
+    Sub.batch
+        [ Ports.receiveTerminalOutput
+            (\envelope ->
+                case decodeTerminalEnvelope (Json.Decode.field "data" Json.Decode.value) envelope of
+                    Ok ( wsId, data ) ->
+                        TerminalMsgFor wsId (Terminal.Types.ReceivedTerminalOutput data)
 
-        Nothing ->
-            Sub.none
+                    Err _ ->
+                        NoOp
+            )
+        , Ports.receiveTerminalResized
+            (\envelope ->
+                case decodeTerminalEnvelope (Json.Decode.field "size" Json.Decode.value) envelope of
+                    Ok ( wsId, size ) ->
+                        TerminalMsgFor wsId (Terminal.Types.ReceivedTerminalResized size)
+
+                    Err _ ->
+                        NoOp
+            )
+        ]
+
+
+decodeTerminalEnvelope : Json.Decode.Decoder a -> Json.Decode.Value -> Result Json.Decode.Error ( String, a )
+decodeTerminalEnvelope innerDecoder envelope =
+    Json.Decode.decodeValue
+        (Json.Decode.map2 Tuple.pair
+            (Json.Decode.field "workspaceId" Json.Decode.string)
+            innerDecoder
+        )
+        envelope
 
 
 subscriptions : Model -> Sub Msg
@@ -573,7 +675,7 @@ subscriptions model =
     in
     Sub.batch
         [ editorSubscriptions (activeWs |> Maybe.andThen .editor)
-        , terminalSubscriptions (activeWs |> Maybe.andThen .terminal)
+        , terminalSubscriptions
         , fileTreeSubscriptions
         , Ports.receiveNotification ReceivedNotification
         , Ports.receiveFuzzyFindResults ReceivedFuzzyFindResults
@@ -583,6 +685,7 @@ subscriptions model =
         , Ports.receiveRecentProjects ReceivedRecentProjects
         , Ports.receiveExternalFileChange ExternalFileChange
         , Ports.receiveExternalFileDelete ExternalFileDelete
+        , Ports.receiveWorkspaceInitialized WorkspaceInitialized
         , Time.every 1000 NotificationTick
         , Sub.map RawKeyboardMsg (RawKeyboard.subscriptions True True)
         ]
@@ -829,70 +932,137 @@ viewNotificationCard ( _, notification ) =
         ]
 
 
-{-| Apply an externally-modified file's contents to the active workspace's
-editor when that file is currently active. Disk always wins. Cursor is
-preserved, clamped to the new line bounds.
+{-| Apply an externally-modified file's contents to whichever workspace
+owns it. Disk always wins. Cursor is preserved, clamped to the new line
+bounds. Identical contents are a no-op (catches own-save round-trips).
 -}
-applyExternalFileChange : FileTree.Types.File -> Model -> ( Model, Cmd Msg )
-applyExternalFileChange externalFile model =
-    case WL.active model of
-        Nothing ->
+applyExternalFileChange : Json.Decode.Value -> Model -> ( Model, Cmd Msg )
+applyExternalFileChange envelope model =
+    case
+        Json.Decode.decodeValue
+            (Json.Decode.map3 (\wsId path contents -> ( wsId, path, contents ))
+                (Json.Decode.field "workspaceId" Json.Decode.string)
+                (Json.Decode.field "path" Json.Decode.string)
+                (Json.Decode.field "contents" Json.Decode.string)
+            )
+            envelope
+    of
+        Ok ( workspaceId, path, contents ) ->
+            case WL.findByPath workspaceId model of
+                Nothing ->
+                    ( model, Cmd.none )
+
+                Just ws ->
+                    case ( ws.activeFile == Just path, ws.editor ) of
+                        ( True, Just editor ) ->
+                            let
+                                currentContents =
+                                    Editor.Lib.renderableLinesToContents editor.travelable.renderableLines
+                            in
+                            if currentContents == contents then
+                                ( model, Cmd.none )
+
+                            else
+                                let
+                                    newLines =
+                                        Editor.Lib.contentsToRenderableLines contents
+
+                                    currentCursor =
+                                        editor.travelable.cursorPosition
+
+                                    clampedY =
+                                        max 0 (min (List.length newLines - 1) currentCursor.y)
+
+                                    clampedLineLength =
+                                        List.Extra.getAt clampedY newLines
+                                            |> Maybe.map (.text >> String.length)
+                                            |> Maybe.withDefault 0
+
+                                    clampedX =
+                                        max 0 (min clampedLineLength currentCursor.x)
+
+                                    travelable =
+                                        editor.travelable
+
+                                    newTravelable =
+                                        { travelable
+                                            | renderableLines = newLines
+                                            , cursorPosition = { x = clampedX, y = clampedY }
+                                        }
+
+                                    newEditor =
+                                        { editor | travelable = newTravelable }
+                                in
+                                ( WL.mapWorkspaceByPath workspaceId
+                                    (\w ->
+                                        { w
+                                            | editor = Just newEditor
+                                            , fileHistory = addToFileHistory w.fileHistory path contents
+                                        }
+                                    )
+                                    model
+                                , Cmd.none
+                                )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+        Err _ ->
             ( model, Cmd.none )
 
-        Just ws ->
-            case ( ws.activeFile == Just externalFile.path, ws.editor ) of
-                ( True, Just editor ) ->
-                    let
-                        currentContents =
-                            Editor.Lib.renderableLinesToContents editor.travelable.renderableLines
-                    in
-                    if currentContents == externalFile.contents then
-                        ( model, Cmd.none )
+
+decodeWorkspaceFileTreeEnvelope : Json.Decode.Value -> Result Json.Decode.Error ( String, FileTree.Types.FileTreeAndFlat )
+decodeWorkspaceFileTreeEnvelope envelope =
+    case
+        Json.Decode.decodeValue
+            (Json.Decode.map2 Tuple.pair
+                (Json.Decode.field "workspaceId" Json.Decode.string)
+                (Json.Decode.field "tree" Json.Decode.value)
+            )
+            envelope
+    of
+        Err e ->
+            Err e
+
+        Ok ( workspaceId, treeValue ) ->
+            case decodeFiles treeValue of
+                Ok treeAndFlat ->
+                    Ok ( workspaceId, treeAndFlat )
+
+                Err e ->
+                    Err e
+
+
+updateWorkspaceFileTree : FileTree.Types.FileTreeAndFlat -> Workspace -> Workspace
+updateWorkspaceFileTree treeAndFlat ws =
+    case ws.fileTree of
+        Nothing ->
+            { ws
+                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
+                , terminal = Just (Terminal.init treeAndFlat.tree.path PortHandlers.editorPorts (PortHandlers.terminalPorts treeAndFlat.tree.path))
+                , fileTreeShowing = True
+                , terminalShowing = True
+            }
+
+        Just oldTree ->
+            let
+                activeFileDeleted =
+                    case ws.activeFile of
+                        Just af ->
+                            not (List.member af (List.map .path treeAndFlat.flat))
+
+                        Nothing ->
+                            False
+            in
+            { ws
+                | fileTree = Just (FileTree.FileTree.refresh oldTree treeAndFlat)
+                , editor =
+                    if activeFileDeleted then
+                        Nothing
 
                     else
-                        let
-                            newLines =
-                                Editor.Lib.contentsToRenderableLines externalFile.contents
-
-                            currentCursor =
-                                editor.travelable.cursorPosition
-
-                            clampedY =
-                                max 0 (min (List.length newLines - 1) currentCursor.y)
-
-                            clampedLineLength =
-                                List.Extra.getAt clampedY newLines
-                                    |> Maybe.map (.text >> String.length)
-                                    |> Maybe.withDefault 0
-
-                            clampedX =
-                                max 0 (min clampedLineLength currentCursor.x)
-
-                            travelable =
-                                editor.travelable
-
-                            newTravelable =
-                                { travelable
-                                    | renderableLines = newLines
-                                    , cursorPosition = { x = clampedX, y = clampedY }
-                                }
-
-                            newEditor =
-                                { editor | travelable = newTravelable }
-                        in
-                        ( WL.mapActive
-                            (\w ->
-                                { w
-                                    | editor = Just newEditor
-                                    , fileHistory = addToFileHistory w.fileHistory externalFile.path externalFile.contents
-                                }
-                            )
-                            model
-                        , Cmd.none
-                        )
-
-                _ ->
-                    ( model, Cmd.none )
+                        ws.editor
+            }
 
 
 main : Program Flags Model Msg

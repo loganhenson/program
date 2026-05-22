@@ -18,7 +18,7 @@ type Msg
     | ActivateDirectory String
     | FuzzyFindProjects String
     | FuzzyFindInProjectFileOrDirectory String
-    | ReceivedFuzzyFindResults (List String)
+    | ReceivedFuzzyFindResults Json.Encode.Value
     | ReceivedNotification Json.Encode.Value
     | DismissNotification Notification.Types.Notification
     | RequestOpenProject String
@@ -36,9 +36,12 @@ type Msg
     | NotificationReceivedAt Notification.Types.Notification Time.Posix
     | NotificationTick Time.Posix
     | ExternalFileChange Json.Encode.Value
-    | ExternalFileDelete String
+    | ExternalFileDelete Json.Encode.Value
     | SelectTab Int
     | AddTabRequested
     | CloseRequested Int
     | CloseConfirmed Int
     | DisarmCloseTick
+    | TerminalMsgFor String Terminal.Types.Msg
+    | NoOp
+    | WorkspaceInitialized Json.Encode.Value
