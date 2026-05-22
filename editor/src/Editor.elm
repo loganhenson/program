@@ -165,33 +165,114 @@ update msg model =
                         |> Editor.Lib.updateEditor model
 
 
-viewLineNumbers : Config -> List Editor.Msg.RenderableLine -> Html.Html msg
-viewLineNumbers config renderableLines =
+{-| Spike: how many extra lines above/below the visible viewport we render.
+Cushion so a quick scroll doesn't reveal an unrendered area before the
+next scroll-event triggers a re-slice.
+-}
+viewportBufferLines : Int
+viewportBufferLines =
+    50
+
+
+{-| Spike: assumed viewport height in pixels. Real code should read this
+from `Browser.Dom.getViewportOf "editor-container"` and store on the
+model. Hardcoded for the spike — most monitors are taller than this so
+the buffer hides any edge bugs.
+-}
+viewportHeightPx : Int
+viewportHeightPx =
+    1200
+
+
+visibleRange : Int -> Int -> ( Int, Int )
+visibleRange scrollTop numberOfLines =
+    let
+        firstVisible =
+            scrollTop // Constants.lineHeight
+
+        lastVisible =
+            firstVisible + (viewportHeightPx // Constants.lineHeight)
+
+        start =
+            max 0 (firstVisible - viewportBufferLines)
+
+        end =
+            min numberOfLines (lastVisible + viewportBufferLines)
+    in
+    ( start, end )
+
+
+viewLineNumbers : Config -> Int -> List Editor.Msg.RenderableLine -> Html.Html msg
+viewLineNumbers config scrollTop renderableLines =
     let
         numberOfLines =
             List.length renderableLines
+
+        ( start, end ) =
+            visibleRange scrollTop numberOfLines
+
+        visible =
+            renderableLines
+                |> List.drop start
+                |> List.take (end - start)
+
+        topSpacerHeight =
+            start * Constants.lineHeight
+
+        bottomSpacerHeight =
+            (numberOfLines - end) * Constants.lineHeight
     in
     Html.div
         ([ Html.Attributes.style "width" ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth numberOfLines) ++ "px")
          ]
             ++ editorLineNumbersStyles config
         )
-        (List.map (\index -> Html.div [] [ Html.text (String.fromInt index) ]) (List.range 1 numberOfLines))
+        [ Html.div [ Html.Attributes.style "height" (String.fromInt topSpacerHeight ++ "px") ] []
+        , Html.div []
+            (List.indexedMap
+                (\i _ -> Html.div [] [ Html.text (String.fromInt (start + i + 1)) ])
+                visible
+            )
+        , Html.div [ Html.Attributes.style "height" (String.fromInt bottomSpacerHeight ++ "px") ] []
+        ]
 
 
-viewRendered : Config -> Maybe Editor.Syntax.Types.Syntax -> List Editor.Msg.RenderableLine -> Html.Html Msg
-viewRendered config syntax renderableLines =
-    Html.Keyed.node "div"
+viewRendered : Config -> Int -> Maybe Editor.Syntax.Types.Syntax -> List Editor.Msg.RenderableLine -> Html.Html Msg
+viewRendered config scrollTop syntax renderableLines =
+    let
+        numberOfLines =
+            List.length renderableLines
+
+        ( start, end ) =
+            visibleRange scrollTop numberOfLines
+
+        visible =
+            renderableLines
+                |> List.drop start
+                |> List.take (end - start)
+
+        topSpacerHeight =
+            start * Constants.lineHeight
+
+        bottomSpacerHeight =
+            (numberOfLines - end) * Constants.lineHeight
+    in
+    Html.div
         ([ onScrollX Editor.Msg.RenderedScroll
          , id "editor-rendered"
-         , style "width" ("calc(100% - " ++ ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth (List.length renderableLines)) ++ "px"))
+         , style "width" ("calc(100% - " ++ ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth numberOfLines) ++ "px"))
          ]
             ++ renderedStyles config
         )
-        (List.indexedMap
-            (viewKeyedLine config syntax)
-            renderableLines
-        )
+        [ Html.div [ Html.Attributes.style "height" (String.fromInt topSpacerHeight ++ "px") ] []
+        , Html.Keyed.node "div"
+            []
+            (List.indexedMap
+                (\i renderableLine -> viewKeyedLine config syntax (start + i) renderableLine)
+                visible
+            )
+        , Html.div [ Html.Attributes.style "height" (String.fromInt bottomSpacerHeight ++ "px") ] []
+        ]
 
 
 viewKeyedLine : Config -> Maybe Editor.Syntax.Types.Syntax -> Int -> Editor.Msg.RenderableLine -> ( String, Html.Html Msg )
@@ -254,7 +335,7 @@ viewEditor model =
         , Html.span [ Html.Attributes.id "character-width", Html.Attributes.style "position" "absolute", Html.Attributes.style "left" "500px", Html.Attributes.style "visibility" "hidden" ]
             [ Html.text "0"
             ]
-        , Html.Lazy.lazy3 viewRendered model.config model.syntax model.travelable.renderableLines
+        , Html.Lazy.lazy4 viewRendered model.config model.travelable.scrollTop model.syntax model.travelable.renderableLines
         , Html.Lazy.lazy4 Editor.Lib.renderCursor
             model.config
             model.travelable.cursorPosition
@@ -286,7 +367,7 @@ view model =
         )
         [ case model.config.showLineNumbers of
             True ->
-                Html.Lazy.lazy2 viewLineNumbers model.config model.travelable.renderableLines
+                Html.Lazy.lazy3 viewLineNumbers model.config model.travelable.scrollTop model.travelable.renderableLines
 
             False ->
                 Html.text ""
