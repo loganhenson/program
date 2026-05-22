@@ -17,6 +17,16 @@ import Terminal.EightBitColors
 import Terminal.Types exposing (Buffer, Model, Msg(..), Terminal, TerminalBuffer(..), TerminalCommand(..), TerminalSize)
 
 
+{-| Hard cap on the terminal scrollback buffer. Each line is a
+RenderableLine; a long-running shell printing tens of thousands of
+lines (build logs, `tail -f`) would otherwise grow the model forever.
+The oldest lines are dropped once we exceed this.
+-}
+maxScrollbackLines : Int
+maxScrollbackLines =
+    10000
+
+
 init : String -> Editor.Msg.Ports -> Terminal.Types.Ports -> Model
 init cwd editorPorts terminalPorts =
     { terminal =
@@ -1146,8 +1156,22 @@ newLine { height } terminal =
 
                                 scrollbackTravelable =
                                     scrollbackEditor.travelable
+
+                                appended =
+                                    List.concat [ scrollbackTravelable.renderableLines, addToScrollback ]
+
+                                cappedLines =
+                                    let
+                                        excess =
+                                            List.length appended - maxScrollbackLines
+                                    in
+                                    if excess > 0 then
+                                        List.drop excess appended
+
+                                    else
+                                        appended
                             in
-                            { scrollbackEditor | travelable = { scrollbackTravelable | renderableLines = List.concat [ scrollbackTravelable.renderableLines, addToScrollback ] } }
+                            { scrollbackEditor | travelable = { scrollbackTravelable | renderableLines = cappedLines } }
 
                         _ ->
                             terminal.scrollback

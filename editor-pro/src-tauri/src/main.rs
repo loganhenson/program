@@ -474,6 +474,11 @@ fn start_terminal(window: &WebviewWindow<Wry>, directory: String) {
   });
 }
 
+/// Cap fuzzy results so we never feed the frontend more DOM nodes than it
+/// can render quickly. Searching a huge monorepo for a vague substring
+/// can match tens of thousands of files; the UI freezes well before then.
+const MAX_FUZZY_RESULTS: usize = 5_000;
+
 fn find_in_project_file_or_directory(
   tools: &ResolvedTools,
   directory: &str,
@@ -499,6 +504,7 @@ fn find_in_project_file_or_directory(
   match Command::new(fd).args(args).output() {
     Ok(output) => String::from_utf8_lossy(&output.stdout)
       .lines()
+      .take(MAX_FUZZY_RESULTS)
       .map(|s| s.to_string())
       .collect(),
     Err(e) => {
@@ -541,12 +547,16 @@ fn find_project(
         eprintln!("fd execution failed for root {}: {:?}", root_str, e);
       }
     }
+    if results.len() >= MAX_FUZZY_RESULTS {
+      break;
+    }
   }
 
   // Dedupe while preserving order (different roots can yield the same
   // canonical project via symlinks)
   let mut seen = std::collections::HashSet::new();
   results.retain(|p| seen.insert(p.clone()));
+  results.truncate(MAX_FUZZY_RESULTS);
   results
 }
 
