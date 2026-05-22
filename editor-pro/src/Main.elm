@@ -10,6 +10,8 @@ import FileTree.Decoders exposing (decodeFiles, decodeJsonFile)
 import FileTree.FileTree
 import FileTree.Types
 import List.Extra
+import Svg
+import Svg.Attributes
 import FuzzyFinder.FuzzyFinder
 import Html exposing (div, text)
 import Html.Attributes exposing (class, classList, id, style)
@@ -1136,49 +1138,61 @@ viewTerminalPane ws =
         Just activeTab ->
             div
                 [ style "height" "30%"
+                , style "position" "relative"
                 , style "display" "flex"
                 , style "flex-direction" "column"
                 , style "background" "#262626"
-                -- Keep the pane radius just inside the macOS window
-                -- corner — at exact-match the border's outermost corner
-                -- pixels sit on the OS clip boundary and get sliced off.
                 , style "border-bottom-left-radius" "8px"
                 , style "border-bottom-right-radius" "8px"
-                -- No overflow:hidden — that was clipping the box-shadow
-                -- at the rounded corners. We rely instead on the inner
-                -- wrapper's own overflow:hidden + matching radius to
-                -- keep terminal content from leaking past the curve.
-                -- The ring needs to be 2px (not 1px). Wry sub-pixel-
-                -- renders a 1px box-shadow along the curve into oblivion
-                -- — the corner segment becomes effectively invisible.
-                -- 2px stays visible all the way through both bottom
-                -- rounded corners.
-                , style "padding" "2px"
-                , style "box-shadow"
-                    (if ws.focused == Terminal then
-                        "inset 0 0 0 2px #60a5fa"
-
-                     else
-                        "inset 0 0 0 2px #8f99ab42"
-                    )
+                , style "overflow" "hidden"
                 , class "w-full"
                 ]
                 [ terminalTabBar ws
                 , div
-                    -- Match the outer pane's bottom radius + clip here
-                    -- (instead of on the outer) so terminal content
-                    -- doesn't bleed past the curve, while the outer can
-                    -- render its focus-ring box-shadow along the curve
-                    -- without being clipped.
                     [ style "flex" "1 1 auto"
                     , style "min-height" "0"
                     , style "overflow" "hidden"
-                    , style "border-bottom-left-radius" "7px"
-                    , style "border-bottom-right-radius" "7px"
                     , onClick FocusTerminal
                     ]
                     [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
+                , focusRingOverlay ws.focused
                 ]
+
+
+{-| SVG focus ring rendered on top of the terminal pane. Wry has a
+sub-pixel rendering bug that makes a 1px CSS border / outline /
+box-shadow disappear along curved border-radius corners — SVG strokes
+don't have that problem because they're explicit vector paths.
+-}
+focusRingOverlay : Focused -> Html.Html Msg
+focusRingOverlay focused =
+    let
+        color =
+            if focused == Terminal then
+                "#60a5fa"
+
+            else
+                "#8f99ab42"
+    in
+    Svg.svg
+        [ Svg.Attributes.style "position: absolute; inset: 0; pointer-events: none;"
+        , Svg.Attributes.width "100%"
+        , Svg.Attributes.height "100%"
+        , Svg.Attributes.preserveAspectRatio "none"
+        ]
+        [ Svg.rect
+            [ Svg.Attributes.x "0.5"
+            , Svg.Attributes.y "0.5"
+            , Svg.Attributes.width "calc(100% - 1px)"
+            , Svg.Attributes.height "calc(100% - 1px)"
+            , Svg.Attributes.rx "7.5"
+            , Svg.Attributes.ry "7.5"
+            , Svg.Attributes.fill "none"
+            , Svg.Attributes.stroke color
+            , Svg.Attributes.strokeWidth "1"
+            ]
+            []
+        ]
 
 
 terminalTabBar : Workspace -> Html.Html Msg
