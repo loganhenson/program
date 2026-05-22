@@ -26,6 +26,12 @@ port requestSetupTerminalResizeObserver : () -> Cmd msg
 port requestOpenProject : String -> Cmd msg
 
 
+port requestCloseWorkspace : String -> Cmd msg
+
+
+port setActiveContext : Json.Encode.Value -> Cmd msg
+
+
 port requestRefreshDirectory : String -> Cmd msg
 
 
@@ -127,7 +133,7 @@ port receiveActivatedFile : (Json.Encode.Value -> msg) -> Sub msg
 port receiveErrors : (Json.Encode.Value -> msg) -> Sub msg
 
 
-port receiveFuzzyFindResults : (List String -> msg) -> Sub msg
+port receiveFuzzyFindResults : (Json.Encode.Value -> msg) -> Sub msg
 
 
 port receiveFileTree : (Json.Encode.Value -> msg) -> Sub msg
@@ -151,4 +157,7 @@ port receiveRecentProjects : (List String -> msg) -> Sub msg
 port receiveExternalFileChange : (Json.Encode.Value -> msg) -> Sub msg
 
 
-port receiveExternalFileDelete : (String -> msg) -> Sub msg
+port receiveExternalFileDelete : (Json.Encode.Value -> msg) -> Sub msg
+
+
+port receiveWorkspaceInitialized : (Json.Encode.Value -> msg) -> Sub msg

@@ -5,6 +5,7 @@ import Editor.Lib
 import Editor.Msg
 import FileTree.FileTree
 import FileTree.Types
+import Json.Encode
 import List.Extra
 import Model exposing (Model)
 import Msg exposing (Msg(..))
@@ -179,14 +180,12 @@ activateInWorkspace ws path updateFileHistory =
             )
 
 
-{-| Open a project directory. Add-or-focus semantics: if the path is
-already an open tab, switch to it; otherwise append a new tab and focus
-it. The Rust side is still single-workspace (full per-tab state
-preservation is the next PR) — switching tabs re-asks Rust to load that
-project, which restarts the terminal and refreshes the file tree.
+{-| Open a project directory. Just fires the port — Rust canonicalizes
+the path, creates the workspace state, and emits an `initialize` event
+which JS forwards via `receiveWorkspaceInitialized` so Elm adds the
+workspace under its canonical name. This avoids the user-input vs
+canonical-path mismatch you'd get if Elm added optimistically.
 -}
 requestOpenProject : Model -> String -> ( Model, Cmd Msg )
 requestOpenProject model directory =
-    ( WL.addOrFocus directory model
-    , Ports.requestOpenProject directory
-    )
+    ( model, Ports.requestOpenProject directory )
