@@ -1148,20 +1148,21 @@ viewTerminalPane ws =
                 -- are clipped to the rounded corners instead of bleeding
                 -- past them with sharp edges.
                 , style "overflow" "hidden"
-                -- Use outline with negative offset, NOT CSS border. Wry
-                -- doesn't render `border` along the curved corner segment
-                -- (the bottom-left/right border-radius), so the bottom
-                -- corners look borderless. `outline` follows
-                -- border-radius reliably AND paints on top of children,
-                -- so the tab strip + terminal can't cover it.
-                , style "outline"
+                -- Wry refuses to render `border` AND `outline` along the
+                -- curved corner segment. Trick: pad the pane by 1px and
+                -- use box-shadow inset for the ring. The padding gives
+                -- the shadow its own pixel ring along the rounded edge
+                -- that the children (tab strip, terminal) physically
+                -- can't paint over. box-shadow follows border-radius
+                -- reliably in Wry where the other two don't.
+                , style "padding" "1px"
+                , style "box-shadow"
                     (if ws.focused == Terminal then
-                        "1px solid #60a5fa"
+                        "inset 0 0 0 1px #60a5fa"
 
                      else
-                        "1px solid #8f99ab42"
+                        "inset 0 0 0 1px #8f99ab42"
                     )
-                , style "outline-offset" "-1px"
                 , class "w-full"
                 ]
                 [ terminalTabBar ws
