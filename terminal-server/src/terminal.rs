@@ -17,6 +17,14 @@ pub struct Size {
 pub struct Api {
     pub run_tx: std::sync::mpsc::Sender<std::string::String>,
     pub resize_tx: std::sync::mpsc::Sender<Size>,
+    /// Held by the caller (typically in a per-workspace struct) so that
+    /// dropping the workspace closes this channel; the kill-watcher
+    /// thread spawned in `start` is blocked on the receiver and will
+    /// reap the spawned shell as soon as the sender drops. Closing the
+    /// channel propagates through the PTY: the child dies, the master's
+    /// reader returns EOF, the reader thread exits; the writer/resize
+    /// threads exit when their own channels close shortly after.
+    pub kill_tx: std::sync::mpsc::Sender<()>,
 }
 
 pub fn start(
@@ -62,7 +70,18 @@ pub fn start(
     for (key, value) in std::env::vars() {
         cmd.env(key, value);
     }
-    let _child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+
+    // Kill-watcher: holds the child so we can reap it cleanly. Blocks on
+    // `kill_rx.recv()` until the sender drops (or someone explicitly
+    // sends a unit). Killing the child closes the slave's pty fds, which
+    // causes the master reader to hit EOF and the reader thread exits.
+    let (kill_tx, kill_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let _ = kill_rx.recv();
+        let _ = child.kill();
+        let _ = child.wait();
+    });
 
     // Read and parse output from the pty with reader
     let mut reader = pair.master.try_clone_reader().unwrap();
@@ -190,5 +209,5 @@ pub fn start(
         }
     });
 
-    Api { run_tx, resize_tx }
+    Api { run_tx, resize_tx, kill_tx }
 }
