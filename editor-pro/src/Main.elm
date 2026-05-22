@@ -413,7 +413,7 @@ update msg model_ =
                                         , activeTerminalIndex = max 0 nextActiveTermIdx
                                     }
 
-                                nextModel =
+                                modelAfterClose =
                                     WL.mapActive (always nextWs) model
                                         |> disarmTerminalCloses
 
@@ -422,10 +422,21 @@ update msg model_ =
                                         [ ( "workspaceId", Json.Encode.string ws.projectPath )
                                         , ( "terminalId", Json.Encode.string closingTab.id )
                                         ]
+
+                                -- Closing the last terminal leaves the pane empty
+                                -- and unusable; auto-spawn a fresh one in the
+                                -- workspace's cwd so the user always has a shell.
+                                ( nextModel, openCmd ) =
+                                    if List.isEmpty remainingTerms then
+                                        openTerminalInWorkspace ws.projectPath modelAfterClose
+
+                                    else
+                                        ( modelAfterClose, Cmd.none )
                             in
                             ( nextModel
                             , Cmd.batch
                                 [ Ports.requestCloseTerminal closePayload
+                                , openCmd
                                 , emitActiveContext nextModel
                                 ]
                             )
@@ -1128,26 +1139,36 @@ viewTerminalPane ws =
                 , style "display" "flex"
                 , style "flex-direction" "column"
                 , style "background" "#262626"
-                -- macOS Tahoe window corner ~= 10pt; the radius needs to
-                -- match or the OS clip slices the bottom of the pane.
-                , style "border-bottom-left-radius" "10px"
-                , style "border-bottom-right-radius" "10px"
+                -- Keep the pane radius just inside the macOS window
+                -- corner — at exact-match the border's outermost corner
+                -- pixels sit on the OS clip boundary and get sliced off.
+                , style "border-bottom-left-radius" "8px"
+                , style "border-bottom-right-radius" "8px"
                 -- overflow:hidden so the inner terminal view + scrollbar
                 -- are clipped to the rounded corners instead of bleeding
                 -- past them with sharp edges.
                 , style "overflow" "hidden"
-                , classList
-                    [ ( "border-blue-400", ws.focused == Terminal )
-                    , ( "border-lightgray-transparent", ws.focused /= Terminal )
-                    ]
-                , class "border w-full"
+                -- Use inset box-shadow instead of CSS border so the ring
+                -- renders reliably along the rounded bottom corners (the
+                -- border-color was being lost on the curve in Wry).
+                , style "box-shadow"
+                    (if ws.focused == Terminal then
+                        "inset 0 0 0 1px #60a5fa"
+
+                     else
+                        "inset 0 0 0 1px #8f99ab42"
+                    )
+                , class "w-full"
                 ]
                 [ terminalTabBar ws
                 , div
+                    -- Terminal.view brings its own #terminal-container
+                    -- scroll context; adding another overflow-y: scroll
+                    -- here stacks two scrollbars and the outer one fights
+                    -- the terminal's autoscroll on `ls`-like bursts.
                     [ style "flex" "1 1 auto"
                     , style "min-height" "0"
-                    , style "overflow-y" "scroll"
-                    , style "overflow-x" "hidden"
+                    , style "overflow" "hidden"
                     , onClick FocusTerminal
                     ]
                     [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]

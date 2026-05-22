@@ -311,10 +311,12 @@ viewActiveTerminal model =
     case List.Extra.getAt model.activeTerminalIndex model.terminals of
         Just activeTab ->
             div
+                -- Terminal.view brings its own #terminal-container scroll
+                -- context; an extra overflow-y: scroll out here stacks
+                -- scrollbars and fights the terminal's autoscroll.
                 [ style "flex" "1 1 auto"
                 , style "min-height" "0"
-                , style "overflow-y" "scroll"
-                , style "overflow-x" "hidden"
+                , style "overflow" "hidden"
                 ]
                 [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
 
