@@ -1144,36 +1144,37 @@ viewTerminalPane ws =
                 -- pixels sit on the OS clip boundary and get sliced off.
                 , style "border-bottom-left-radius" "8px"
                 , style "border-bottom-right-radius" "8px"
-                -- overflow:hidden so the inner terminal view + scrollbar
-                -- are clipped to the rounded corners instead of bleeding
-                -- past them with sharp edges.
-                , style "overflow" "hidden"
-                -- Wry refuses to render `border` AND `outline` along the
-                -- curved corner segment. Trick: pad the pane by 1px and
-                -- use box-shadow inset for the ring. The padding gives
-                -- the shadow its own pixel ring along the rounded edge
-                -- that the children (tab strip, terminal) physically
-                -- can't paint over. box-shadow follows border-radius
-                -- reliably in Wry where the other two don't.
-                , style "padding" "1px"
+                -- No overflow:hidden — that was clipping the box-shadow
+                -- at the rounded corners. We rely instead on the inner
+                -- wrapper's own overflow:hidden + matching radius to
+                -- keep terminal content from leaking past the curve.
+                -- The ring needs to be 2px (not 1px). Wry sub-pixel-
+                -- renders a 1px box-shadow along the curve into oblivion
+                -- — the corner segment becomes effectively invisible.
+                -- 2px stays visible all the way through both bottom
+                -- rounded corners.
+                , style "padding" "2px"
                 , style "box-shadow"
                     (if ws.focused == Terminal then
-                        "inset 0 0 0 1px #60a5fa"
+                        "inset 0 0 0 2px #60a5fa"
 
                      else
-                        "inset 0 0 0 1px #8f99ab42"
+                        "inset 0 0 0 2px #8f99ab42"
                     )
                 , class "w-full"
                 ]
                 [ terminalTabBar ws
                 , div
-                    -- Terminal.view brings its own #terminal-container
-                    -- scroll context; adding another overflow-y: scroll
-                    -- here stacks two scrollbars and the outer one fights
-                    -- the terminal's autoscroll on `ls`-like bursts.
+                    -- Match the outer pane's bottom radius + clip here
+                    -- (instead of on the outer) so terminal content
+                    -- doesn't bleed past the curve, while the outer can
+                    -- render its focus-ring box-shadow along the curve
+                    -- without being clipped.
                     [ style "flex" "1 1 auto"
                     , style "min-height" "0"
                     , style "overflow" "hidden"
+                    , style "border-bottom-left-radius" "7px"
+                    , style "border-bottom-right-radius" "7px"
                     , onClick FocusTerminal
                     ]
                     [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
