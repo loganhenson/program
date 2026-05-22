@@ -1,12 +1,31 @@
+use preflight::{Check, ProbeOutcome, Report};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use tauri::{Emitter, Listener, Manager, WebviewWindow, Wry};
 use terminal::{parse::TerminalCommand, terminal::Size};
 
+fn nerd_font_probe() -> ProbeOutcome {
+  preflight::probe_font("NerdFontMono")
+}
+
+const CHECKS: &[Check] = &[Check {
+  id: "jetbrains-nerd-font",
+  label: "JetBrains Mono Nerd Font",
+  probe: nerd_font_probe,
+  install_commands: &["brew install --cask font-jetbrains-mono-nerd-font"],
+  docs_url: Some("https://www.nerdfonts.com/"),
+}];
+
+#[tauri::command]
+fn preflight() -> Report {
+  preflight::run(CHECKS)
+}
+
 fn main() {
   tauri::Builder::default()
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_process::init())
+    .invoke_handler(tauri::generate_handler![preflight])
     .setup(|app| {
       let window = app.get_webview_window("main").unwrap();
       let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());

@@ -22,6 +22,7 @@ anyhow = { version = "1.0" }
 tokio = { version = "1.11.0", features = ["rt", "rt-multi-thread", "macros"] }
 terminal = { path = "../../terminal-server" }
 filetree = { path = "./src/filetree" }
+preflight = { path = "../../preflight" }
 
 [features]
 default = ["custom-protocol"]
