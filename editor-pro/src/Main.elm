@@ -1148,16 +1148,21 @@ viewTerminalPane ws =
                 -- are clipped to the rounded corners instead of bleeding
                 -- past them with sharp edges.
                 , style "overflow" "hidden"
-                -- Real CSS border (not box-shadow inset) — inset shadow
-                -- renders BEHIND child content and gets covered up by
-                -- the tab strip + terminal view. With the 8px radius
-                -- inside the 10px macOS curve, the border stays visible
-                -- around the entire perimeter including the corners.
-                , classList
-                    [ ( "border-blue-400", ws.focused == Terminal )
-                    , ( "border-lightgray-transparent", ws.focused /= Terminal )
-                    ]
-                , class "border w-full"
+                -- Use outline with negative offset, NOT CSS border. Wry
+                -- doesn't render `border` along the curved corner segment
+                -- (the bottom-left/right border-radius), so the bottom
+                -- corners look borderless. `outline` follows
+                -- border-radius reliably AND paints on top of children,
+                -- so the tab strip + terminal can't cover it.
+                , style "outline"
+                    (if ws.focused == Terminal then
+                        "1px solid #60a5fa"
+
+                     else
+                        "1px solid #8f99ab42"
+                    )
+                , style "outline-offset" "-1px"
+                , class "w-full"
                 ]
                 [ terminalTabBar ws
                 , div
