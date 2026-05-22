@@ -130,17 +130,26 @@ update msg model =
                     ( nextModel, Cmd.none )
 
         NotificationReceivedAt notification now ->
-            let
-                entry =
-                    ( Time.posixToMillis now, notification )
-            in
-            ( { nextModel
-                | notifications =
-                    (entry :: nextModel.notifications)
-                        |> List.take maxNotifications
-              }
-            , Cmd.none
-            )
+            -- Dedupe: if the same notification (source + type + message) is
+            -- already showing, drop the new one rather than stacking
+            -- duplicates. Catches double-emits (e.g., the file tree firing
+            -- activate twice on a too-large file) without us needing to
+            -- track down every upstream emitter.
+            if List.any (\( _, n ) -> n == notification) nextModel.notifications then
+                ( nextModel, Cmd.none )
+
+            else
+                let
+                    entry =
+                        ( Time.posixToMillis now, notification )
+                in
+                ( { nextModel
+                    | notifications =
+                        (entry :: nextModel.notifications)
+                            |> List.take maxNotifications
+                  }
+                , Cmd.none
+                )
 
         NotificationTick now ->
             let
@@ -580,19 +589,49 @@ viewTerminal maybeTerminal focused =
 
 viewNotifications : List ( Int, Notification.Types.Notification ) -> Html.Html Msg
 viewNotifications notifications =
-    div [ class "fixed bottom-0 right-0 w-1/2 m-2" ]
-        (List.map
-            (\( _, notification ) ->
-                div [ class "h-32 bg-lightgray p-2 w-full flex flex-col justify-between" ]
-                    [ div [ class "flex" ]
-                        [ div [ class "mb-2" ] [ text notification.message ]
-                        , div [ onClick (DismissNotification notification) ] [ text "X" ]
-                        ]
-                    , div [] [ text ("Source: " ++ notification.source) ]
-                    ]
-            )
-            notifications
-        )
+    div
+        [ class "fixed bottom-0 right-0 m-3 flex flex-col"
+        , style "max-width" "440px"
+        , style "gap" "8px"
+        , style "z-index" "50"
+        ]
+        (List.map viewNotificationCard notifications)
+
+
+viewNotificationCard : ( Int, Notification.Types.Notification ) -> Html.Html Msg
+viewNotificationCard ( _, notification ) =
+    div
+        [ class "bg-lightgray rounded shadow"
+        , style "padding" "10px 12px"
+        ]
+        [ div [ class "flex", style "gap" "8px" ]
+            [ div
+                [ class "flex-1"
+                , style "font-size" "13px"
+                , style "line-height" "1.4"
+                , style "color" "#d4d4d4"
+                ]
+                [ text notification.message ]
+            , Html.button
+                [ onClick (DismissNotification notification)
+                , style "background" "transparent"
+                , style "border" "0"
+                , style "color" "#8a8a8a"
+                , style "cursor" "pointer"
+                , style "font-size" "16px"
+                , style "line-height" "1"
+                , style "padding" "0 4px"
+                , Html.Attributes.title "Dismiss"
+                ]
+                [ text "×" ]
+            ]
+        , div
+            [ style "font-size" "11px"
+            , style "color" "#7a8088"
+            , style "margin-top" "4px"
+            ]
+            [ text notification.source ]
+        ]
 
 
 {-| Apply an externally-modified file's contents to the editor when it's

@@ -83,10 +83,10 @@ const MAX_FILE_LINES: usize = 10_000;
 
 /// Minified bundles, embedded sourcemaps, and packed data files cram a
 /// huge amount of text onto one line. They sail past the line-count cap
-/// (one line!) but rendering that single span chokes the editor. 250
-/// chars comfortably covers hand-written code (style guides land at
-/// 80–120) and most JSON blobs while being well below anything minified.
-const MAX_LINE_LENGTH: usize = 250;
+/// (one line!) but rendering that single span chokes the editor. 500
+/// chars is well above hand-written code (style guides land at 80–120)
+/// and most JSON blobs while still being well below anything minified.
+const MAX_LINE_LENGTH: usize = 500;
 
 /// Byte cap derived from the line and length caps: no file with both
 /// `MAX_FILE_LINES` lines of `MAX_LINE_LENGTH` chars can exceed this
