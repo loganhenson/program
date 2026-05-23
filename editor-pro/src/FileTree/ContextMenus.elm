@@ -20,24 +20,26 @@ fileOrDirectoryContextMenu fileOrDirectory =
         [ ( "New File"
           , StartCreateNewFile
                 (case fileOrDirectory.type_ of
-                    -- If they right clicked a directory, put the file there
                     FileOrDirectoryDirectory ->
                         fileOrDirectory.path
 
-                    -- If they right clicked a file, put the file in that files directory
                     FileOrDirectoryFile ->
+                        dirname fileOrDirectory.path
+
+                    FileOrDirectoryOpaque ->
                         dirname fileOrDirectory.path
                 )
           )
         , ( "New Directory"
           , StartCreateNewDirectory
                 (case fileOrDirectory.type_ of
-                    -- If they right clicked a directory, put the directory inside it
                     FileOrDirectoryDirectory ->
                         fileOrDirectory.path
 
-                    -- If they right clicked a file, put the directory in that files directory
                     FileOrDirectoryFile ->
+                        dirname fileOrDirectory.path
+
+                    FileOrDirectoryOpaque ->
                         dirname fileOrDirectory.path
                 )
           )

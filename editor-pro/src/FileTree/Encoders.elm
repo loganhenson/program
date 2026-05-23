@@ -20,5 +20,8 @@ encodeFileOrDirectory fileOrDirectory =
 
                 FileOrDirectoryDirectory ->
                     string "directory"
+
+                FileOrDirectoryOpaque ->
+                    string "opaque"
           )
         ]

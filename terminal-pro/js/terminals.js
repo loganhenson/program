@@ -8,12 +8,12 @@ module.exports = {
       editor.sendResizedToTerminal(event.payload)
     })
 
-    editor.registerOnRequestRunTerminal(async ({ contents }) => {
-      emit('run', contents)
+    editor.registerOnRequestRunTerminal(async ({ terminalId, contents }) => {
+      emit('run', { terminalId, contents })
     })
 
-    editor.registerOnTerminalResize(async ({ height, width }) => {
-      emit('resize', { height, width })
+    editor.registerOnTerminalResize(async ({ terminalId, height, width }) => {
+      emit('resize', { terminalId, size: { height, width } })
     })
   },
 }

@@ -14,12 +14,12 @@ export default {
       editor.sendResizedToTerminal(event.payload)
     })
 
-    editor.registerOnRequestRunTerminal(async ({ workspaceId, contents }) => {
-      emit('run', { workspaceId, contents })
+    editor.registerOnRequestRunTerminal(async ({ workspaceId, terminalId, contents }) => {
+      emit('run', { workspaceId, terminalId, contents })
     })
 
-    editor.registerOnTerminalResize(async ({ workspaceId, height, width }) => {
-      emit('resize', { workspaceId, size: { height, width } })
+    editor.registerOnTerminalResize(async ({ workspaceId, terminalId, height, width }) => {
+      emit('resize', { workspaceId, terminalId, size: { height, width } })
     })
   }
 }

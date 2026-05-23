@@ -21,6 +21,10 @@ module.exports = {
     state: {
       directory: null,
     },
+    // Active terminal id, pushed from Elm via setActiveContext. Used to
+    // stamp outgoing run/resize emits since the ResizeObserver and run
+    // handler don't otherwise know which tab is active.
+    activeContext: { terminalId: null },
   },
   registerOnRequestRunTerminal(handler) {
     this.handlers.requestRunTerminal = handler
@@ -31,31 +35,28 @@ module.exports = {
   start(listen, emit) {
     try {
       terminals.initialize(this, listen, emit)
-
       console.log(`initialized`)
     } catch (e) {
       console.log(`failed to initialize:` + e)
     }
   },
-  sendOutputToTerminal(output) {
-    window.vterm.ports.receiveTerminalOutput.send(output)
+  sendOutputToTerminal(payload) {
+    // payload = { terminalId, data }
+    window.vterm.ports.receiveTerminalOutput.send(payload)
   },
-  sendResizedToTerminal({ height, width }) {
-    window.vterm.ports.receiveTerminalResized.send({ height, width })
+  sendResizedToTerminal(payload) {
+    // payload = { terminalId, size }
+    window.vterm.ports.receiveTerminalResized.send(payload)
   },
   async initialize(state, listen, emit) {
     window.onkeydown = (event) => {
       event.preventDefault()
     }
 
-    // Required for plugins
     this.data.state = state
 
     await this.start(listen, emit)
 
-    /**
-     * Elm initialization
-     */
     window.vterm = Elm.Main.init({
       flags: {
         directory: state.directory,
@@ -66,12 +67,30 @@ module.exports = {
     /**
      * Ports
      */
+    window.vterm.ports.setActiveContext.subscribe((ctx) => {
+      this.data.activeContext = ctx
+    })
+
+    window.vterm.ports.requestOpenTerminal.subscribe((payload) => {
+      // payload = { terminalId, cwd }
+      emit('openTerminal', payload)
+    })
+
+    window.vterm.ports.requestCloseTerminal.subscribe((payload) => {
+      // payload = { terminalId }
+      emit('closeTerminal', payload)
+    })
+
     window.vterm.ports.requestRunTerminal.subscribe(({ contents }) => {
-      this.handlers.requestRunTerminal({ contents })
+      this.handlers.requestRunTerminal({
+        terminalId: this.data.activeContext.terminalId,
+        contents,
+      })
     })
 
     window.vterm.ports.requestPasteTerminal.subscribe(async () => {
       this.handlers.requestRunTerminal({
+        terminalId: this.data.activeContext.terminalId,
         contents: await readText(),
       })
     })
@@ -98,25 +117,37 @@ module.exports = {
           return
         }
 
+        // Subtract a row of slack — the macOS window's rounded bottom
+        // corners clip a few pixels of whatever the last row would have
+        // landed on, so we leave one row of breathing room to guarantee
+        // the prompt is never hidden under the curve.
         let w = Math.floor(terminals[0].contentRect.width / 8.4)
-        let h = Math.floor(terminals[0].contentRect.height / 24)
+        let h = Math.max(1, Math.floor(terminals[0].contentRect.height / 24) - 1)
         let nextWidthIncrement = Math.floor(w * 8.4);
         let nextHeightIncrement = Math.floor(h * 24);
 
         if (nextWidthIncrement !== prevWidthIncrement || nextHeightIncrement !== prevHeightIncrement) {
-          console.log(w, h)
           prevWidthIncrement = nextWidthIncrement
           prevHeightIncrement = nextHeightIncrement
           this.handlers.requestResizeTerminal({
+            terminalId: this.data.activeContext.terminalId,
             width: w,
             height: h,
           })
         }
       }))
 
-      if (document.querySelector('#terminal')) {
-        terminalResizeObserver.observe(document.querySelector('#terminal'))
-      }
+      // Observe #terminal-container, NOT #terminal. #terminal's height is
+      // content-driven (grows with rendered rows), so observing it creates
+      // a self-reinforcing PTY size that ignores the actual visible area —
+      // the last rows end up below the window fold. #terminal-container
+      // has h-full (= viewport), so its content rect is the real viewport.
+      let interval = setInterval(() => {
+        if (document.querySelector('#terminal-container')) {
+          terminalResizeObserver.observe(document.querySelector('#terminal-container'))
+          clearInterval(interval)
+        }
+      }, 200)
     })
   }
 }

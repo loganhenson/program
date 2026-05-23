@@ -45,6 +45,15 @@ port requestQuit : () -> Cmd msg
 port requestSetupTerminalResizeObserver : () -> Cmd msg
 
 
+port requestOpenTerminal : Json.Encode.Value -> Cmd msg
+
+
+port requestCloseTerminal : Json.Encode.Value -> Cmd msg
+
+
+port setActiveContext : Json.Encode.Value -> Cmd msg
+
+
 
 -- Receiving Terminal
 

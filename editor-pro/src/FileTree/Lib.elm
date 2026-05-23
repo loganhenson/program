@@ -34,6 +34,9 @@ getFileOrDirectoryBelow model =
                                 FileOrDirectoryFile ->
                                     Just ( next.path, next )
 
+                                FileOrDirectoryOpaque ->
+                                    Just ( next.path, next )
+
                         Nothing ->
                             -- We are at the bottom
                             Nothing

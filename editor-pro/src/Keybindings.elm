@@ -191,13 +191,13 @@ handleKeybindingsForWorkspace model ws msg =
 
                     Terminal ->
                         --Generally handled by loganhenson/editor
-                        case ws.terminal of
-                            Just terminal ->
+                        case List.Extra.getAt ws.activeTerminalIndex ws.terminals of
+                            Just activeTab ->
                                 let
                                     ( nextTerminal, msgs ) =
-                                        Terminal.Keybindings.handleKeybindings key terminal
+                                        Terminal.Keybindings.handleKeybindings key activeTab.terminal
                                 in
-                                ( WL.mapActive (\w -> { w | terminal = Just nextTerminal }) model
+                                ( WL.mapTerminalInWorkspace ws.projectPath activeTab.id (\t -> { t | terminal = nextTerminal }) model
                                 , Cmd.map TerminalMsg msgs
                                 )
 

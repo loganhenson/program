@@ -1,33 +1,44 @@
-module Tabs.Tabs exposing (view)
+module Tabs.Tabs exposing (TabItem, view)
 
 import Html exposing (Html, button, div, span, text)
 import Html.Attributes exposing (class, classList, style, title)
-import Html.Events exposing (onClick)
-import Msg exposing (Msg(..))
-import Workspace.Types exposing (Workspace)
+import Html.Events exposing (onClick, stopPropagationOn)
+import Json.Decode
 
 
-{-| Render the project-tabs strip at the top of the window.
+type alias TabItem =
+    { label : String
+    , tooltip : Maybe String
+    , closeArmed : Bool
+    }
 
-  - Tabs scroll horizontally when they don't fit.
-  - The `+` button lives in a sibling container so it stays pinned right
-    even when the strip is scrolled.
 
-`closeArmed` on each workspace is the inline two-click confirmation
-state for the `×` button; see `Step 3` for its wiring.
+{-| Render a horizontal tab strip with a pinned `+` button.
+
+  - Tabs scroll horizontally when they don't fit; the `+` stays right.
+  - Each tab has a close button; first click flips its `closeArmed`
+    state (so the parent renders it as a red "Confirm?"); second click
+    fires `onConfirmClose`.
+  - All msg-producing callbacks come from the parent so this view is
+    reusable for both project tabs and terminal tabs.
 
 -}
 view :
-    { workspaces : List Workspace
+    { tabs : List TabItem
     , activeIndex : Int
+    , onSelect : Int -> msg
+    , onClose : Int -> msg
+    , onConfirmClose : Int -> msg
+    , onAdd : msg
+    , addTooltip : String
     }
-    -> Html Msg
-view { workspaces, activeIndex } =
+    -> Html msg
+view config =
     div
         [ class "flex flex-row select-none"
         , style "height" "32px"
         , style "background" "#1e1e1e"
-        , style "border-bottom" "1px solid #333"
+        , style "border-top" "1px solid #333"
         , style "flex-shrink" "0"
         ]
         [ div
@@ -36,26 +47,40 @@ view { workspaces, activeIndex } =
             , style "min-width" "0"
             , style "overflow-x" "auto"
             ]
-            (List.indexedMap (\i ws -> viewTab i (i == activeIndex) ws) workspaces)
+            (List.indexedMap
+                (\i tab ->
+                    viewTab
+                        { index = i
+                        , isActive = i == config.activeIndex
+                        , tab = tab
+                        , onSelect = config.onSelect
+                        , onClose = config.onClose
+                        , onConfirmClose = config.onConfirmClose
+                        }
+                )
+                config.tabs
+            )
         , div
             [ style "flex-shrink" "0"
             , style "display" "flex"
             , style "align-items" "stretch"
             ]
-            [ addButton ]
+            [ addButton config.onAdd config.addTooltip ]
         ]
 
 
-viewTab : Int -> Bool -> Workspace -> Html Msg
-viewTab idx isActive ws =
-    let
-        name =
-            basename ws.projectPath
-    in
+viewTab :
+    { index : Int
+    , isActive : Bool
+    , tab : TabItem
+    , onSelect : Int -> msg
+    , onClose : Int -> msg
+    , onConfirmClose : Int -> msg
+    }
+    -> Html msg
+viewTab args =
     div
-        [ classList
-            [ ( "border-blue-400", isActive )
-            ]
+        [ classList [ ( "border-blue-400", args.isActive ) ]
         , style "padding" "0 8px 0 12px"
         , style "min-width" "0"
         , style "max-width" "180px"
@@ -65,28 +90,28 @@ viewTab idx isActive ws =
         , style "cursor" "pointer"
         , style "border-right" "1px solid #333"
         , style "border-bottom"
-            (if isActive then
+            (if args.isActive then
                 "2px solid #4a9eff"
 
              else
                 "2px solid transparent"
             )
         , style "background"
-            (if isActive then
+            (if args.isActive then
                 "#2a2a2a"
 
              else
                 "#1e1e1e"
             )
         , style "color"
-            (if isActive then
+            (if args.isActive then
                 "#d4d4d4"
 
              else
                 "#9aa0a6"
             )
-        , title ws.projectPath
-        , onClick (SelectTab idx)
+        , title (Maybe.withDefault args.tab.label args.tab.tooltip)
+        , onClick (args.onSelect args.index)
         ]
         [ span
             [ style "font-size" "12px"
@@ -96,16 +121,32 @@ viewTab idx isActive ws =
             , style "flex" "1 1 auto"
             , style "min-width" "0"
             ]
-            [ text name ]
-        , viewCloseButton idx ws
+            [ text args.tab.label ]
+        , viewCloseButton args
         ]
 
 
-viewCloseButton : Int -> Workspace -> Html Msg
-viewCloseButton idx ws =
-    if ws.closeArmed then
+{-| Don't let close-button clicks bubble up to the parent tab div, or
+clicking × would also select the tab and immediately disarm/discard the
+close intent. -}
+onClickStop : msg -> Html.Attribute msg
+onClickStop msg =
+    stopPropagationOn "click" (Json.Decode.succeed ( msg, True ))
+
+
+viewCloseButton :
+    { index : Int
+    , isActive : Bool
+    , tab : TabItem
+    , onSelect : Int -> msg
+    , onClose : Int -> msg
+    , onConfirmClose : Int -> msg
+    }
+    -> Html msg
+viewCloseButton args =
+    if args.tab.closeArmed then
         button
-            [ onClick (CloseConfirmed idx)
+            [ onClickStop (args.onConfirmClose args.index)
             , style "background" "#c0392b"
             , style "border" "0"
             , style "color" "#ffffff"
@@ -119,7 +160,7 @@ viewCloseButton idx ws =
 
     else
         button
-            [ onClick (CloseRequested idx)
+            [ onClickStop (args.onClose args.index)
             , style "background" "transparent"
             , style "border" "0"
             , style "color" "#7a8088"
@@ -132,10 +173,10 @@ viewCloseButton idx ws =
             [ text "×" ]
 
 
-addButton : Html Msg
-addButton =
+addButton : msg -> String -> Html msg
+addButton onAdd tooltip =
     button
-        [ onClick AddTabRequested
+        [ onClick onAdd
         , style "background" "transparent"
         , style "border" "0"
         , style "border-left" "1px solid #333"
@@ -144,28 +185,6 @@ addButton =
         , style "font-size" "16px"
         , style "line-height" "1"
         , style "padding" "0 14px"
-        , title "Open another project"
+        , title tooltip
         ]
         [ text "+" ]
-
-
-basename : String -> String
-basename path =
-    let
-        trimmed =
-            if String.endsWith "/" path then
-                String.dropRight 1 path
-
-            else
-                path
-    in
-    case List.reverse (String.split "/" trimmed) of
-        last :: _ ->
-            if String.isEmpty last then
-                trimmed
-
-            else
-                last
-
-        [] ->
-            trimmed

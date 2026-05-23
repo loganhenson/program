@@ -38,8 +38,11 @@ decodeFileOrDirectoryType =
                     "Directory" ->
                         succeed FileOrDirectoryDirectory
 
+                    "Opaque" ->
+                        succeed FileOrDirectoryOpaque
+
                     _ ->
-                        fail "unknown type (allowed: 'File'|'Directory')"
+                        fail "unknown type (allowed: 'File'|'Directory'|'Opaque')"
             )
 
 

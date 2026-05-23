@@ -31,6 +31,10 @@ type alias FileTree =
 type FileOrDirectoryType
     = FileOrDirectoryFile
     | FileOrDirectoryDirectory
+      -- Directory the walker chose not to recurse into (e.g. node_modules,
+      -- target, .git). Shown as a non-expandable, dimmed leaf so the user
+      -- can see it exists without paying the perf cost of walking it.
+    | FileOrDirectoryOpaque
 
 
 type alias FileOrDirectory =

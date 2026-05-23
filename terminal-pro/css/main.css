@@ -5,5 +5,12 @@
 
 @import "tailwindcss/utilities";
 
+/* Kill the macOS rubber-band scroll on every scroll container — this is
+   a native app, not a web page, and the bounce makes the UI feel like
+   it's loose in its frame. */
+html, body, * {
+  overscroll-behavior: none;
+}
+
 
 

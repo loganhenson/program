@@ -1,11 +1,13 @@
 module Workspace.Lib exposing
     ( active
+    , activeTerminal
     , addOrFocus
     , empty
     , findByPath
     , findIndexByPath
     , mapActive
     , mapActiveWithCmd
+    , mapTerminalInWorkspace
     , mapWorkspaceByPath
     , removeAt
     )
@@ -13,8 +15,9 @@ module Workspace.Lib exposing
 import FuzzyFinder.FuzzyFinder
 import List.Extra
 import Model exposing (Model)
+import Terminal.Types
 import Types exposing (Focused(..))
-import Workspace.Types exposing (Workspace)
+import Workspace.Types exposing (TerminalTab, Workspace)
 
 
 {-| Return the currently-active workspace, if there is one.
@@ -56,7 +59,8 @@ mapActiveWithCmd f model =
 
 
 {-| A freshly-created workspace for the given project path, with all
-per-workspace state at its initial values.
+per-workspace state at its initial values. Terminals list starts empty;
+the first `openTerminal` request creates the workspace's primary shell.
 -}
 empty : String -> Workspace
 empty projectPath =
@@ -64,7 +68,9 @@ empty projectPath =
     , editor = Nothing
     , fileHistory = []
     , activeFile = Nothing
-    , terminal = Nothing
+    , terminals = []
+    , activeTerminalIndex = 0
+    , terminalCounter = 0
     , terminalShowing = True
     , fileTree = Nothing
     , fileTreeShowing = False
@@ -82,6 +88,39 @@ findIndexByPath path model =
 findByPath : String -> Model -> Maybe Workspace
 findByPath path model =
     List.Extra.find (\ws -> ws.projectPath == path) model.workspaces
+
+
+{-| The currently-active terminal within a workspace, if any. Each
+workspace tracks its own active terminal index, so the active terminal
+on the active workspace is `WL.active model |> Maybe.andThen activeTerminal`.
+-}
+activeTerminal : Workspace -> Maybe Terminal.Types.Model
+activeTerminal ws =
+    List.Extra.getAt ws.activeTerminalIndex ws.terminals
+        |> Maybe.map .terminal
+
+
+{-| Apply a transform to the terminal tab with `terminalId` within the
+workspace at `workspaceId`. No-op if either isn't found.
+-}
+mapTerminalInWorkspace : String -> String -> (TerminalTab -> TerminalTab) -> Model -> Model
+mapTerminalInWorkspace workspaceId terminalId f model =
+    mapWorkspaceByPath workspaceId
+        (\ws ->
+            { ws
+                | terminals =
+                    List.map
+                        (\tt ->
+                            if tt.id == terminalId then
+                                f tt
+
+                            else
+                                tt
+                        )
+                        ws.terminals
+            }
+        )
+        model
 
 
 {-| Apply a pure transform to whichever workspace has `path` as its
