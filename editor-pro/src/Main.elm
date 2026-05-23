@@ -1142,8 +1142,8 @@ viewTerminalPane ws =
                 , style "display" "flex"
                 , style "flex-direction" "column"
                 , style "background" "#262626"
-                , style "border-bottom-left-radius" "8px"
-                , style "border-bottom-right-radius" "8px"
+                , style "border-bottom-left-radius" (String.fromInt paneRadius ++ "px")
+                , style "border-bottom-right-radius" (String.fromInt paneRadius ++ "px")
                 , style "overflow" "hidden"
                 , class "w-full"
                 ]
@@ -1159,10 +1159,23 @@ viewTerminalPane ws =
                 ]
 
 
-{-| SVG focus ring rendered on top of the terminal pane. Wry has a
-sub-pixel rendering bug that makes a 1px CSS border / outline /
-box-shadow disappear along curved border-radius corners — SVG strokes
-don't have that problem because they're explicit vector paths.
+{-| Bottom-corner radius. Matches the macOS window corner radius so the
+pane's curve sits flush with the OS window's curve. Used both for the
+CSS border-radius on the pane and for the SVG corner arcs in the ring.
+-}
+paneRadius : Int
+paneRadius =
+    12
+
+
+{-| Focus ring drawn on top of the terminal pane. Three CSS divs draw
+the straight top/left/right/bottom edges (top is FLAT — pane only
+rounds at the bottom); two tiny fixed-size SVGs each draw one
+quarter-arc for the bottom rounded corners. Splitting it like this
+avoids the Wry sub-pixel quirk (1px CSS border/outline/box-shadow
+vanishes along a curve) AND the SVG aspect-ratio distortion problem
+(a stretched <rect rx="12"> produces oval corners that don't match
+the macOS curve).
 -}
 focusRingOverlay : Focused -> Html.Html Msg
 focusRingOverlay focused =
@@ -1173,25 +1186,63 @@ focusRingOverlay focused =
 
             else
                 "#8f99ab42"
+
+        rPx =
+            String.fromInt paneRadius ++ "px"
+
+        rStr =
+            String.fromInt paneRadius
+
+        edge attrs =
+            div ([ style "position" "absolute", style "background" color ] ++ attrs) []
+
+        corner pathD positionStyles =
+            div
+                ([ style "position" "absolute"
+                 , style "width" rPx
+                 , style "height" rPx
+                 ]
+                    ++ positionStyles
+                )
+                [ Svg.svg
+                    [ Svg.Attributes.viewBox ("0 0 " ++ rStr ++ " " ++ rStr)
+                    , Svg.Attributes.width "100%"
+                    , Svg.Attributes.height "100%"
+                    , Svg.Attributes.fill "none"
+                    ]
+                    [ Svg.path
+                        [ Svg.Attributes.d pathD
+                        , Svg.Attributes.stroke color
+                        , Svg.Attributes.strokeWidth "1"
+                        ]
+                        []
+                    ]
+                ]
     in
-    Svg.svg
-        [ Svg.Attributes.style "position: absolute; inset: 0; pointer-events: none;"
-        , Svg.Attributes.width "100%"
-        , Svg.Attributes.height "100%"
-        , Svg.Attributes.preserveAspectRatio "none"
+    div
+        [ style "position" "absolute"
+        , style "top" "0"
+        , style "left" "0"
+        , style "right" "0"
+        , style "bottom" "0"
+        , style "pointer-events" "none"
         ]
-        [ Svg.rect
-            [ Svg.Attributes.x "0.5"
-            , Svg.Attributes.y "0.5"
-            , Svg.Attributes.width "calc(100% - 1px)"
-            , Svg.Attributes.height "calc(100% - 1px)"
-            , Svg.Attributes.rx "7.5"
-            , Svg.Attributes.ry "7.5"
-            , Svg.Attributes.fill "none"
-            , Svg.Attributes.stroke color
-            , Svg.Attributes.strokeWidth "1"
-            ]
-            []
+        [ edge [ style "top" "0", style "left" "0", style "right" "0", style "height" "1px" ]
+        , edge [ style "top" "0", style "left" "0", style "width" "1px", style "bottom" rPx ]
+        , edge [ style "top" "0", style "right" "0", style "width" "1px", style "bottom" rPx ]
+        , edge [ style "bottom" "0", style "left" rPx, style "right" rPx, style "height" "1px" ]
+        , -- Bottom-left arc: from top-edge endpoint (0.5, 0) curving down
+          -- and right to bottom-edge endpoint (R, R-0.5). sweep=1 picks
+          -- the arc on the lower-left side of the chord — the visible
+          -- corner area.
+          corner
+            ("M 0.5 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 1 " ++ rStr ++ " " ++ String.fromFloat (toFloat paneRadius - 0.5))
+            [ style "bottom" "0", style "left" "0" ]
+        , -- Bottom-right arc: mirror of BL. sweep=0 for the lower-right
+          -- side of the chord.
+          corner
+            ("M " ++ String.fromFloat (toFloat paneRadius - 0.5) ++ " 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 0 0 " ++ String.fromFloat (toFloat paneRadius - 0.5))
+            [ style "bottom" "0", style "right" "0" ]
         ]
 
 
