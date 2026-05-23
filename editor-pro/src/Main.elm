@@ -1139,23 +1139,34 @@ viewTerminalPane ws =
             div
                 [ style "height" "30%"
                 , style "position" "relative"
-                , style "display" "flex"
-                , style "flex-direction" "column"
-                , style "background" "#262626"
-                , style "border-bottom-left-radius" (String.fromInt paneRadius ++ "px")
-                , style "border-bottom-right-radius" (String.fromInt paneRadius ++ "px")
-                , style "overflow" "hidden"
                 , class "w-full"
                 ]
-                [ terminalTabBar ws
-                , div
-                    [ style "flex" "1 1 auto"
-                    , style "min-height" "0"
+                [ -- Pane (sibling of focus ring): bg + rounded bottom +
+                  -- overflow:hidden to clip children to the rounded shape.
+                  div
+                    [ style "position" "absolute"
+                    , style "inset" "0"
+                    , style "display" "flex"
+                    , style "flex-direction" "column"
+                    , style "background" "#262626"
+                    , style "border-bottom-left-radius" (String.fromInt paneRadius ++ "px")
+                    , style "border-bottom-right-radius" (String.fromInt paneRadius ++ "px")
                     , style "overflow" "hidden"
-                    , onClick FocusTerminal
                     ]
-                    [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
-                , focusRingOverlay ws.focused
+                    [ terminalTabBar ws
+                    , div
+                        [ style "flex" "1 1 auto"
+                        , style "min-height" "0"
+                        , style "overflow" "hidden"
+                        , onClick FocusTerminal
+                        ]
+                        [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
+                    ]
+                , -- Focus ring (sibling, NOT child): drawn on top of the
+                  -- pane and NOT inside the pane's overflow:hidden, so
+                  -- the corner arc strokes aren't half-pixel-clipped by
+                  -- the rounded mask.
+                  focusRingOverlay ws.focused
                 ]
 
 
@@ -1231,17 +1242,18 @@ focusRingOverlay focused =
         , edge [ style "top" "0", style "left" "0", style "width" "1px", style "bottom" rPx ]
         , edge [ style "top" "0", style "right" "0", style "width" "1px", style "bottom" rPx ]
         , edge [ style "bottom" "0", style "left" rPx, style "right" rPx, style "height" "1px" ]
-        , -- Bottom-left arc: from top-edge endpoint (0.5, 0) curving down
-          -- and right to bottom-edge endpoint (R, R-0.5). sweep=1 picks
-          -- the arc on the lower-left side of the chord — the visible
-          -- corner area.
+        , -- Bottom-left arc: traces the convex outward curve of the
+          -- pane's rounded corner. Arc-center is at the top-right of
+          -- the corner div (inside the pane), so the arc bulges toward
+          -- the bottom-left — matching the OS window's rounded corner
+          -- shape. sweep=0 picks that half of the chord.
           corner
-            ("M 0.5 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 1 " ++ rStr ++ " " ++ String.fromFloat (toFloat paneRadius - 0.5))
+            ("M 0.5 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 0 " ++ rStr ++ " " ++ String.fromFloat (toFloat paneRadius - 0.5))
             [ style "bottom" "0", style "left" "0" ]
-        , -- Bottom-right arc: mirror of BL. sweep=0 for the lower-right
-          -- side of the chord.
+        , -- Bottom-right arc: mirror — center top-left of corner div,
+          -- bulges toward bottom-right. sweep=1.
           corner
-            ("M " ++ String.fromFloat (toFloat paneRadius - 0.5) ++ " 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 0 0 " ++ String.fromFloat (toFloat paneRadius - 0.5))
+            ("M " ++ String.fromFloat (toFloat paneRadius - 0.5) ++ " 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 1 0 " ++ String.fromFloat (toFloat paneRadius - 0.5))
             [ style "bottom" "0", style "right" "0" ]
         ]
 
