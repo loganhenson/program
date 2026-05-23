@@ -121,13 +121,8 @@ module.exports = {
         // corners clip a few pixels of whatever the last row would have
         // landed on, so we leave one row of breathing room to guarantee
         // the prompt is never hidden under the curve.
-        // Floor the PTY at 5 rows — zsh themes that use `%(?:...)`
-        // prompt expansion or `%1{...%}` width tracking misrender (e.g.
-        // showing `?→` instead of `→`) when the PTY is sized to 1-2
-        // rows. Keeping the PTY at a sane minimum lets the shell render
-        // normally even when the visible viewport is tiny.
         let w = Math.floor(terminals[0].contentRect.width / 8.4)
-        let h = Math.max(5, Math.floor(terminals[0].contentRect.height / 24) - 1)
+        let h = Math.max(1, Math.floor(terminals[0].contentRect.height / 24) - 1)
         let nextWidthIncrement = Math.floor(w * 8.4);
         let nextHeightIncrement = Math.floor(h * 24);
 
