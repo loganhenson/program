@@ -1135,66 +1135,37 @@ viewTerminalPane ws =
 
         Just activeTab ->
             let
-                radiusPx =
-                    String.fromInt paneRadius ++ "px"
-
-                color =
+                accentColor =
                     if ws.focused == Terminal then
                         "#60a5fa"
 
                     else
-                        "#8f99ab42"
+                        "transparent"
             in
             div
-                [ style "height" "30%"
-                , style "position" "relative"
-                , class "w-full"
+                [ class "w-full overflow-hidden"
+                , style "height" "30%"
+                , style "display" "flex"
+                , style "flex-direction" "column"
+                , style "background" "#262626"
+                , style "border-bottom-left-radius" "12px"
+                , style "border-bottom-right-radius" "12px"
                 ]
-                [ -- Pane content. No background-color, no border-radius,
-                  -- no overflow:hidden here — the sibling ring div owns
-                  -- the rounded shape via clip-path; the inner wrapper
-                  -- handles content clipping.
-                  div
-                    [ style "position" "absolute"
-                    , style "inset" "0"
-                    , style "display" "flex"
-                    , style "flex-direction" "column"
-                    , style "background" "#262626"
-                    , style "border-bottom-left-radius" radiusPx
-                    , style "border-bottom-right-radius" radiusPx
-                    , style "overflow" "hidden"
-                    ]
-                    [ terminalTabBar ws
-                    , div
-                        [ style "flex" "1 1 auto"
-                        , style "min-height" "0"
-                        , style "overflow" "hidden"
-                        , onClick FocusTerminal
-                        ]
-                        [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
-                    ]
-                , -- Focus ring: an absolutely positioned sibling div with
-                  -- a real CSS border + matching border-radius. Sibling,
-                  -- not child, so it isn't clipped by the pane's
-                  -- overflow:hidden + rounded mask.
-                  div
-                    [ style "position" "absolute"
-                    , style "inset" "0"
-                    , style "pointer-events" "none"
-                    , style "border" ("1px solid " ++ color)
-                    , style "border-bottom-left-radius" radiusPx
-                    , style "border-bottom-right-radius" radiusPx
+                [ terminalTabBar ws
+                , div
+                    [ style "height" "2px"
+                    , style "background" accentColor
+                    , style "flex-shrink" "0"
                     ]
                     []
+                , div
+                    [ style "flex" "1 1 auto"
+                    , style "min-height" "0"
+                    , style "overflow" "hidden"
+                    , onClick FocusTerminal
+                    ]
+                    [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
                 ]
-
-
-{-| Bottom-corner radius. Matches the macOS window corner radius so the
-pane's curve sits flush with the OS window's curve.
--}
-paneRadius : Int
-paneRadius =
-    12
 
 
 terminalTabBar : Workspace -> Html.Html Msg
