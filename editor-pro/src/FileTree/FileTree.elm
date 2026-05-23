@@ -12,7 +12,7 @@ import FileTree.Lib exposing (getFileOrDirectoryAbove, getFileOrDirectoryBelow)
 import FileTree.Model exposing (Model)
 import FileTree.Types exposing (..)
 import Html exposing (Attribute, button, div, form, input, text)
-import Html.Attributes exposing (class, classList, id, style, type_, value)
+import Html.Attributes exposing (class, classList, id, style, title, type_, value)
 import Html.Events exposing (onClick, onDoubleClick, onInput, onSubmit, stopPropagationOn)
 import Json.Decode
 import Layout exposing (viewDialog)
@@ -478,14 +478,40 @@ viewContextMenu maybeContextMenu =
 
 viewChildren : FileTree.Types.FileTree -> Maybe String -> Dict String FileOrDirectory -> Dict String FileOrDirectory -> Maybe FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
 viewChildren fileTree activeFile openDirectories selectedPaths creatingNewDirectory maybeError =
-    case fileTree.children of
-        -- Directory
-        Just (FileTree.Types.Children nextChildren) ->
-            viewDirectory fileTree nextChildren activeFile openDirectories selectedPaths creatingNewDirectory maybeError
+    case fileTree.type_ of
+        FileOrDirectoryOpaque ->
+            viewOpaqueDirectory fileTree
 
-        -- File
-        Nothing ->
-            viewFile fileTree activeFile selectedPaths
+        _ ->
+            case fileTree.children of
+                -- Directory
+                Just (FileTree.Types.Children nextChildren) ->
+                    viewDirectory fileTree nextChildren activeFile openDirectories selectedPaths creatingNewDirectory maybeError
+
+                -- File
+                Nothing ->
+                    viewFile fileTree activeFile selectedPaths
+
+
+{-| Rendered for directories the walker chose not to recurse into
+(node_modules, target, etc.). Shown so the user knows they exist in the
+project but with a muted style + no expand chevron so it's obvious the
+tree won't open here.
+-}
+viewOpaqueDirectory : FileTree -> Html.Html Msg
+viewOpaqueDirectory fileTree =
+    div
+        [ class "pl-6 whitespace-no-wrap w-auto"
+        , id fileTree.path
+        , title "Not traversed (vendor / cache / build output)"
+        , style "color" "#5a6068"
+        , style "font-style" "italic"
+        , style "cursor" "default"
+        ]
+        [ div
+            [ class "flex w-full" ]
+            [ fileTreeIcon [] fileDirectory, text fileTree.name ]
+        ]
 
 
 viewFile : FileTree -> Maybe String -> Dict String FileOrDirectory -> Html.Html Msg

@@ -33,8 +33,9 @@ export default {
     activeFile: null,
     // Active context updated by Elm via setActiveContext port — JS uses it
     // to stamp outgoing events (save, run, resize, createFile) with the
-    // right workspaceId/file when the user has multiple project tabs open.
-    activeContext: { workspaceId: null, activeFile: null },
+    // right workspaceId / activeFile / terminalId when the user has multiple
+    // project tabs and multiple terminal tabs open.
+    activeContext: { workspaceId: null, activeFile: null, terminalId: null },
     saved: true,
     diagnostics: {},
     fuzzyFinder: null,
@@ -229,6 +230,16 @@ export default {
       emit('closeWorkspace', { workspaceId })
     })
 
+    window.vide.ports.requestOpenTerminal.subscribe((payload) => {
+      // payload = { workspaceId, terminalId }
+      emit('openTerminal', payload)
+    })
+
+    window.vide.ports.requestCloseTerminal.subscribe((payload) => {
+      // payload = { workspaceId, terminalId }
+      emit('closeTerminal', payload)
+    })
+
     window.vide.ports.requestRefreshDirectory.subscribe((directory) => {
       // no-op
     })
@@ -284,6 +295,7 @@ export default {
     window.vide.ports.requestRunTerminal.subscribe(({ contents }) => {
       this.handlers.requestRunTerminal({
         workspaceId: this.data.activeContext.workspaceId,
+        terminalId: this.data.activeContext.terminalId,
         contents,
       })
     })
@@ -291,6 +303,7 @@ export default {
     window.vide.ports.requestPasteTerminal.subscribe(async () => {
       this.handlers.requestRunTerminal({
         workspaceId: this.data.activeContext.workspaceId,
+        terminalId: this.data.activeContext.terminalId,
         contents: await readText(),
       })
     })
@@ -307,8 +320,12 @@ export default {
           return
         }
 
+        // Subtract one row of slack — the macOS window's rounded bottom
+        // corners clip a few pixels of whatever the last row would land
+        // on, so we leave one row of breathing room to guarantee the
+        // prompt is never hidden under the curve.
         let w = Math.floor(terminals[0].contentRect.width / 8.4)
-        let h = Math.floor(terminals[0].contentRect.height / 24)
+        let h = Math.max(1, Math.floor(terminals[0].contentRect.height / 24) - 1)
         let nextWidthIncrement = Math.floor(w * 8.4);
         let nextHeightIncrement = Math.floor(h * 24);
 
@@ -317,15 +334,21 @@ export default {
           prevHeightIncrement = nextHeightIncrement
           this.handlers.requestResizeTerminal({
             workspaceId: this.data.activeContext.workspaceId,
+            terminalId: this.data.activeContext.terminalId,
             width: w,
             height: h,
           })
         }
       }))
 
+      // Observe #terminal-container, NOT #terminal. #terminal's height is
+      // content-driven, so observing it creates a self-reinforcing PTY
+      // size that ignores the actual viewport — the last rows end up
+      // below the window fold. #terminal-container has h-full, so its
+      // content rect is the real viewport.
       let interval = setInterval(() => {
-        if (document.querySelector('#terminal')) {
-          terminalResizeObserver.observe(document.querySelector('#terminal'))
+        if (document.querySelector('#terminal-container')) {
+          terminalResizeObserver.observe(document.querySelector('#terminal-container'))
           clearInterval(interval)
         }
       }, 200)
