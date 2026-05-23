@@ -10,8 +10,6 @@ import FileTree.Decoders exposing (decodeFiles, decodeJsonFile)
 import FileTree.FileTree
 import FileTree.Types
 import List.Extra
-import Svg
-import Svg.Attributes
 import FuzzyFinder.FuzzyFinder
 import Html exposing (div, text)
 import Html.Attributes exposing (class, classList, id, style)
@@ -1136,21 +1134,34 @@ viewTerminalPane ws =
             text ""
 
         Just activeTab ->
+            let
+                radiusPx =
+                    String.fromInt paneRadius ++ "px"
+
+                color =
+                    if ws.focused == Terminal then
+                        "#60a5fa"
+
+                    else
+                        "#8f99ab42"
+            in
             div
                 [ style "height" "30%"
                 , style "position" "relative"
                 , class "w-full"
                 ]
-                [ -- Pane (sibling of focus ring): bg + rounded bottom +
-                  -- overflow:hidden to clip children to the rounded shape.
+                [ -- Pane content. No background-color, no border-radius,
+                  -- no overflow:hidden here — the sibling ring div owns
+                  -- the rounded shape via clip-path; the inner wrapper
+                  -- handles content clipping.
                   div
                     [ style "position" "absolute"
                     , style "inset" "0"
                     , style "display" "flex"
                     , style "flex-direction" "column"
                     , style "background" "#262626"
-                    , style "border-bottom-left-radius" (String.fromInt paneRadius ++ "px")
-                    , style "border-bottom-right-radius" (String.fromInt paneRadius ++ "px")
+                    , style "border-bottom-left-radius" radiusPx
+                    , style "border-bottom-right-radius" radiusPx
                     , style "overflow" "hidden"
                     ]
                     [ terminalTabBar ws
@@ -1162,100 +1173,28 @@ viewTerminalPane ws =
                         ]
                         [ Html.map TerminalMsg <| Terminal.view activeTab.terminal ]
                     ]
-                , -- Focus ring (sibling, NOT child): drawn on top of the
-                  -- pane and NOT inside the pane's overflow:hidden, so
-                  -- the corner arc strokes aren't half-pixel-clipped by
-                  -- the rounded mask.
-                  focusRingOverlay ws.focused
+                , -- Focus ring: an absolutely positioned sibling div with
+                  -- a real CSS border + matching border-radius. Sibling,
+                  -- not child, so it isn't clipped by the pane's
+                  -- overflow:hidden + rounded mask.
+                  div
+                    [ style "position" "absolute"
+                    , style "inset" "0"
+                    , style "pointer-events" "none"
+                    , style "border" ("1px solid " ++ color)
+                    , style "border-bottom-left-radius" radiusPx
+                    , style "border-bottom-right-radius" radiusPx
+                    ]
+                    []
                 ]
 
 
 {-| Bottom-corner radius. Matches the macOS window corner radius so the
-pane's curve sits flush with the OS window's curve. Used both for the
-CSS border-radius on the pane and for the SVG corner arcs in the ring.
+pane's curve sits flush with the OS window's curve.
 -}
 paneRadius : Int
 paneRadius =
     12
-
-
-{-| Focus ring drawn on top of the terminal pane. Three CSS divs draw
-the straight top/left/right/bottom edges (top is FLAT — pane only
-rounds at the bottom); two tiny fixed-size SVGs each draw one
-quarter-arc for the bottom rounded corners. Splitting it like this
-avoids the Wry sub-pixel quirk (1px CSS border/outline/box-shadow
-vanishes along a curve) AND the SVG aspect-ratio distortion problem
-(a stretched <rect rx="12"> produces oval corners that don't match
-the macOS curve).
--}
-focusRingOverlay : Focused -> Html.Html Msg
-focusRingOverlay focused =
-    let
-        color =
-            if focused == Terminal then
-                "#60a5fa"
-
-            else
-                "#8f99ab42"
-
-        rPx =
-            String.fromInt paneRadius ++ "px"
-
-        rStr =
-            String.fromInt paneRadius
-
-        edge attrs =
-            div ([ style "position" "absolute", style "background" color ] ++ attrs) []
-
-        corner pathD positionStyles =
-            div
-                ([ style "position" "absolute"
-                 , style "width" rPx
-                 , style "height" rPx
-                 ]
-                    ++ positionStyles
-                )
-                [ Svg.svg
-                    [ Svg.Attributes.viewBox ("0 0 " ++ rStr ++ " " ++ rStr)
-                    , Svg.Attributes.width "100%"
-                    , Svg.Attributes.height "100%"
-                    , Svg.Attributes.fill "none"
-                    ]
-                    [ Svg.path
-                        [ Svg.Attributes.d pathD
-                        , Svg.Attributes.stroke color
-                        , Svg.Attributes.strokeWidth "1"
-                        ]
-                        []
-                    ]
-                ]
-    in
-    div
-        [ style "position" "absolute"
-        , style "top" "0"
-        , style "left" "0"
-        , style "right" "0"
-        , style "bottom" "0"
-        , style "pointer-events" "none"
-        ]
-        [ edge [ style "top" "0", style "left" "0", style "right" "0", style "height" "1px" ]
-        , edge [ style "top" "0", style "left" "0", style "width" "1px", style "bottom" rPx ]
-        , edge [ style "top" "0", style "right" "0", style "width" "1px", style "bottom" rPx ]
-        , edge [ style "bottom" "0", style "left" rPx, style "right" rPx, style "height" "1px" ]
-        , -- Bottom-left arc: traces the convex outward curve of the
-          -- pane's rounded corner. Arc-center is at the top-right of
-          -- the corner div (inside the pane), so the arc bulges toward
-          -- the bottom-left — matching the OS window's rounded corner
-          -- shape. sweep=0 picks that half of the chord.
-          corner
-            ("M 0.5 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 0 " ++ rStr ++ " " ++ String.fromFloat (toFloat paneRadius - 0.5))
-            [ style "bottom" "0", style "left" "0" ]
-        , -- Bottom-right arc: mirror — center top-left of corner div,
-          -- bulges toward bottom-right. sweep=1.
-          corner
-            ("M " ++ String.fromFloat (toFloat paneRadius - 0.5) ++ " 0 A " ++ rStr ++ " " ++ rStr ++ " 0 0 1 0 " ++ String.fromFloat (toFloat paneRadius - 0.5))
-            [ style "bottom" "0", style "right" "0" ]
-        ]
 
 
 terminalTabBar : Workspace -> Html.Html Msg
