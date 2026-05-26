@@ -39,6 +39,7 @@ view config =
         , style "height" "32px"
         , style "background" "#1e1e1e"
         , style "border-top" "1px solid #333"
+        , style "border-bottom" "1px solid #333"
         , style "flex-shrink" "0"
         ]
         [ div

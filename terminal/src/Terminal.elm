@@ -809,6 +809,14 @@ run commands model =
                                     -- \r
                                     updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = y } } } terminal
 
+                                "\u{0009}" ->
+                                    -- \t  advance to the next 8-column tab stop (clamped to the last column)
+                                    let
+                                        nextStop =
+                                            min (terminal.size.width - 1) (((x // 8) + 1) * 8)
+                                    in
+                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = nextStop, y = y } } } terminal
+
                                 "#8" ->
                                     updateTerminalEditor
                                         { editor
