@@ -1,6 +1,6 @@
 [package]
 name = "terminal-pro"
-version = "0.5.3"
+version = "0.5.4"
 description = "TerminalPro"
 authors = ["you"]
 license = ""
