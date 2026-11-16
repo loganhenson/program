@@ -1,12 +1,12 @@
 use std::{
   collections::HashSet,
-  fs::metadata,
+  fs::{metadata, read_dir, symlink_metadata},
+  panic::{catch_unwind, AssertUnwindSafe},
   path::{Path, PathBuf},
-  sync::mpsc::{Receiver, Sender},
+  sync::mpsc::{Receiver, Sender, TryRecvError},
   thread,
 };
 use serde::{Deserialize, Serialize};
-use walkdir::{DirEntry, WalkDir};
 
 /// Stop walking once we've accumulated this many file-tree entries.
 /// Protects against accidental opens of `~` or other huge directories.
@@ -37,19 +37,28 @@ const SKIP_DIR_NAMES: &[&str] = &[
   "venv",
 ];
 
-/// The order a directory is listed in: folders first, then files, each by
-/// name without regard to case. (The file system's own order is arbitrary.)
-fn listing_order(a: &DirEntry, b: &DirEntry) -> std::cmp::Ordering {
-  let key = |entry: &DirEntry| {
-    let name = entry.file_name().to_string_lossy().to_string();
-    // `path().is_dir()` follows a link, as the walk itself does
-    (!entry.path().is_dir(), name.to_lowercase(), name)
-  };
-  key(a).cmp(&key(b))
-}
-
 fn should_skip_dir(name: &str) -> bool {
   SKIP_DIR_NAMES.iter().any(|n| *n == name)
+}
+
+/// Whether a path is inside a directory the walk does not go into (or is
+/// such a directory). Changes there cannot change the tree: whoever watches
+/// the project can ignore them.
+pub fn is_in_skipped_directory(root: &Path, path: &Path) -> bool {
+  let inside = match path.strip_prefix(root) {
+    Ok(inside) => inside,
+    Err(_) => return false,
+  };
+  let mut components = inside.components().peekable();
+  while let Some(component) = components.next() {
+    let name = component.as_os_str().to_string_lossy();
+    if should_skip_dir(&name) {
+      // the skipped directory itself appearing or going away does show in
+      // the tree (as a row that cannot be opened); what is inside does not
+      return components.peek().is_some();
+    }
+  }
+  false
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -90,27 +99,72 @@ pub struct FileTree {
   pub children: Option<Vec<FileTree>>,
 }
 
-pub fn start(receiver: Receiver<String>, sender: Sender<FileTreeAndFlat>) -> () {
-  thread::spawn(move || {
-    for directory_tree_request in receiver {
-      println!("requesting directory tree for: {:?}", directory_tree_request);
+/// A request for a project's tree.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+  /// Send the tree, whatever it is: the page has none yet.
+  Load(String),
+  /// Something changed on disk: send the tree if it is not the one that
+  /// was sent last.
+  Refresh(String),
+}
 
-      match build(directory_tree_request) {
-        Ok(tree) => match sender.send(tree) {
-          _ => {
-            ();
+/// Walks a project on request and sends its tree.
+///
+/// While a walk is running more requests can pile up (a build writes
+/// thousands of files): only the last one is acted on. A tree that is the
+/// same as the one sent last is not sent again. The thread ends when the
+/// requests' sender is dropped, without working through what was still
+/// queued.
+pub fn start(receiver: Receiver<Request>, sender: Sender<FileTreeAndFlat>) -> () {
+  thread::spawn(move || {
+    let mut sent: Option<FileTreeAndFlat> = None;
+
+    while let Ok(mut request) = receiver.recv() {
+      loop {
+        match receiver.try_recv() {
+          Ok(newer) => {
+            // a Load that was waiting must still be answered
+            request = match (&request, newer) {
+              (Request::Load(_), Request::Refresh(directory)) => Request::Load(directory),
+              (_, newer) => newer,
+            };
           }
+          Err(TryRecvError::Empty) => break,
+          Err(TryRecvError::Disconnected) => return,
         }
-        _ => {}
+      }
+
+      let (directory, always) = match request {
+        Request::Load(directory) => (directory, true),
+        Request::Refresh(directory) => (directory, false),
+      };
+
+      // Nothing the file system does may end this thread: the tree would
+      // never load or refresh again.
+      let tree = match catch_unwind(AssertUnwindSafe(|| build(directory))) {
+        Ok(Ok(tree)) => tree,
+        _ => continue,
+      };
+
+      if always || sent.as_ref() != Some(&tree) {
+        if sender.send(tree.clone()).is_err() {
+          return;
+        }
+        sent = Some(tree);
       }
     }
   });
 }
 
-struct Item {
-  path: String,
-  name: String,
-  children: Option<Vec<FileTree>>,
+/// Why there is no tree for a directory.
+#[derive(Debug, PartialEq)]
+pub struct BuildError(pub String);
+
+impl std::fmt::Display for BuildError {
+  fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
 }
 
 struct WalkState {
@@ -134,131 +188,166 @@ impl WalkState {
   }
 }
 
+#[derive(PartialEq)]
+enum Kind {
+  File,
+  Directory,
+}
+
+/// What a path is, following links. A link that leads nowhere is still an
+/// entry and is listed as a file. `None` for what is not there (it can go
+/// away between being listed and being looked at) and for what is neither
+/// (a socket, a pipe).
+fn kind_of(path: &Path) -> Option<Kind> {
+  match metadata(path) {
+    Ok(meta) if meta.is_dir() => Some(Kind::Directory),
+    Ok(meta) if meta.is_file() => Some(Kind::File),
+    Ok(_) => None,
+    Err(_) => match symlink_metadata(path) {
+      Ok(meta) if meta.file_type().is_symlink() => Some(Kind::File),
+      _ => None,
+    },
+  }
+}
+
+/// The last part of a path, as text. A path that has none (`/`) is named by
+/// the whole path.
+fn name_of(path: &Path) -> String {
+  match path.file_name() {
+    Some(name) => name.to_string_lossy().to_string(),
+    None => path.to_string_lossy().to_string(),
+  }
+}
+
+/// What is in a directory, in the order it is listed: folders first, then
+/// files, each by name without regard to case. (The file system's own order
+/// is arbitrary.) A directory that cannot be read is listed as empty.
+fn children_of(directory: &Path) -> Vec<(PathBuf, String, Kind)> {
+  let entries = match read_dir(directory) {
+    Ok(entries) => entries,
+    Err(_) => return vec![],
+  };
+  let mut children: Vec<(PathBuf, String, Kind)> = entries
+    .filter_map(|entry| entry.ok())
+    .filter_map(|entry| {
+      let path = entry.path();
+      // what the entry is comes with the listing; only a link has to be followed
+      let kind = match entry.file_type() {
+        Ok(file_type) if file_type.is_dir() => Kind::Directory,
+        Ok(file_type) if file_type.is_file() => Kind::File,
+        _ => kind_of(&path)?,
+      };
+      Some((path, entry.file_name().to_string_lossy().to_string(), kind))
+    })
+    .collect();
+  children.sort_by_cached_key(|(_, name, kind)| (*kind == Kind::File, name.to_lowercase(), name.clone()));
+  children
+}
+
 fn directory_tree(
-  directory: String,
+  path: &Path,
+  kind: Kind,
   add_to_flat: &mut dyn FnMut(FileOrDirectory),
   state: &mut WalkState,
 ) -> Option<FileTree> {
-  let name = Path::new(&directory);
+  if state.at_limit() {
+    return None;
+  }
+  let path_text = path.to_string_lossy().to_string();
+  let name = name_of(path);
 
-  let mut item = Item {
-    path: directory.clone(),
-    name: Path::file_name(name).unwrap().to_os_string().into_string().unwrap(),
-    children: None,
-  };
-
-  let meta = metadata(directory.clone()).unwrap();
-
-  if meta.is_file() {
-    if state.at_limit() {
-      return None;
-    }
+  if kind == Kind::File {
     state.entry_count += 1;
     add_to_flat(FileOrDirectory {
-      path: item.path.clone(),
-      name: item.name.clone(),
+      path: path_text.clone(),
+      name: name.clone(),
       type_: FileOrDirectoryType::File,
     });
-  } else if meta.is_dir() {
-    // Cycle detection: skip directories we've already entered via their
-    // canonical path. Without this, a symlink loop (`ln -s .. cycle`)
-    // would recurse forever.
-    let canonical = std::fs::canonicalize(&directory).ok();
-    if let Some(c) = canonical {
-      if !state.enter(c) {
-        return Some(FileTree {
-          path: item.path,
-          name: item.name,
-          type_: FileOrDirectoryType::Directory,
-          children: Some(vec![]),
-        });
-      }
-    }
-
-    if state.at_limit() {
-      return None;
-    }
-    state.entry_count += 1;
-    add_to_flat(FileOrDirectory {
-      path: item.path.clone(),
-      name: item.name.clone(),
-      type_: FileOrDirectoryType::Directory,
+    return Some(FileTree {
+      path: path_text,
+      name,
+      type_: FileOrDirectoryType::File,
+      children: None,
     });
+  }
 
-    // Collect via filter_map so a child returning None (typically because
-    // MAX_ENTRIES was reached deep in the walk) doesn't short-circuit the
-    // whole .collect::<Option<Vec<_>>>() to None. That bug surfaced as the
-    // ROOT being reported with children=None, which the Elm view renders
-    // as a file instead of an empty directory.
-    item.children = Some(
-      WalkDir::new(directory)
-        .min_depth(1)
-        .max_depth(1)
-        .follow_links(false)
-        .sort_by(listing_order)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter_map(|entry| {
-          if state.at_limit() {
-            return None;
-          }
-          if entry.file_type().is_dir()
-            && entry
-              .file_name()
-              .to_str()
-              .map(should_skip_dir)
-              .unwrap_or(false)
-          {
-            if state.at_limit() {
-              return None;
-            }
-            state.entry_count += 1;
-            let opaque_path = entry.path().display().to_string();
-            let opaque_name = entry
-              .file_name()
-              .to_str()
-              .unwrap_or("")
-              .to_string();
-            add_to_flat(FileOrDirectory {
-              path: opaque_path.clone(),
-              name: opaque_name.clone(),
-              type_: FileOrDirectoryType::Opaque,
-            });
-            return Some(FileTree {
-              path: opaque_path,
-              name: opaque_name,
-              type_: FileOrDirectoryType::Opaque,
-              children: None,
-            });
-          }
-          directory_tree(entry.path().display().to_string(), add_to_flat, state)
-        })
-        .collect(),
-    );
-  } else {
-    return None;
+  // Cycle detection: skip directories we've already entered via their
+  // canonical path. Without this, a symlink loop (`ln -s .. cycle`)
+  // would recurse forever.
+  if let Ok(canonical) = std::fs::canonicalize(path) {
+    if !state.enter(canonical) {
+      return Some(FileTree {
+        path: path_text,
+        name,
+        type_: FileOrDirectoryType::Directory,
+        children: Some(vec![]),
+      });
+    }
+  }
+
+  state.entry_count += 1;
+  add_to_flat(FileOrDirectory {
+    path: path_text.clone(),
+    name: name.clone(),
+    type_: FileOrDirectoryType::Directory,
+  });
+
+  // A child that is left out (typically because MAX_ENTRIES was reached deep
+  // in the walk) does not take its parent with it: the root would otherwise
+  // be reported with no children, which the view renders as a file.
+  let mut children = vec![];
+  for (child_path, child_name, child_kind) in children_of(path) {
+    if state.at_limit() {
+      break;
+    }
+    // also when it is a link to one: following it would walk all of it
+    if child_kind == Kind::Directory && should_skip_dir(&child_name) {
+      state.entry_count += 1;
+      let opaque_path = child_path.to_string_lossy().to_string();
+      add_to_flat(FileOrDirectory {
+        path: opaque_path.clone(),
+        name: child_name.clone(),
+        type_: FileOrDirectoryType::Opaque,
+      });
+      children.push(FileTree {
+        path: opaque_path,
+        name: child_name,
+        type_: FileOrDirectoryType::Opaque,
+        children: None,
+      });
+      continue;
+    }
+    if let Some(child) = directory_tree(&child_path, child_kind, add_to_flat, state) {
+      children.push(child);
+    }
   }
 
   Some(FileTree {
-    path: item.path,
-    name: item.name,
-    type_: if meta.is_file() { FileOrDirectoryType::File } else { FileOrDirectoryType::Directory },
-    children: item.children,
+    path: path_text,
+    name,
+    type_: FileOrDirectoryType::Directory,
+    children: Some(children),
   })
 }
 
-pub fn build(directory: String) -> Result<FileTreeAndFlat, walkdir::Error> {
+/// The tree of a directory. An error when the directory is not there (or is
+/// not a directory); whatever is wrong inside it only leaves entries out.
+pub fn build(directory: String) -> Result<FileTreeAndFlat, BuildError> {
   let mut flattened: Vec<FileOrDirectory> = vec![];
   let mut state = WalkState::new();
 
+  let root = Path::new(&directory);
+  if kind_of(root) != Some(Kind::Directory) {
+    return Err(BuildError(format!("{:?} is not a directory", directory)));
+  }
+
   let tree = directory_tree(
-    directory,
+    root,
+    Kind::Directory,
     &mut |file_or_directory| flattened.push(file_or_directory),
     &mut state,
-  );
+  )
+  .ok_or_else(|| BuildError(format!("{:?} could not be read", directory)))?;
 
-  Ok(FileTreeAndFlat {
-    tree: tree.unwrap(),
-    flat: flattened,
-  })
+  Ok(FileTreeAndFlat { tree, flat: flattened })
 }

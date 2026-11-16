@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
+    sync::atomic::{AtomicBool, Ordering},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     sync::{Arc, Condvar, Mutex},
     thread,
@@ -143,11 +144,20 @@ pub struct Api {
     pub flow: Flow,
 }
 
+/// How long a shell gets to exit after it was told its terminal is gone,
+/// before it is killed.
+const HANGUP_GRACE: Duration = Duration::from_secs(2);
+
+/// Starts a shell in a new PTY.
+///
+/// An error when no terminal device could be opened or no shell could be
+/// started (out of file descriptors or PTYs, `$SHELL` pointing nowhere and
+/// none of the usual shells there either). Nothing is left running then.
 pub fn start(
     directory: String,
     output_sender: Sender<Batch>,
     resize_sender: Sender<Size>,
-) -> Api {
+) -> Result<Api, String> {
     let (run_tx, run_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let (resize_tx, resize_rx): (Sender<Size>, Receiver<Size>) = mpsc::channel();
 
@@ -162,29 +172,77 @@ pub fn start(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .unwrap();
+        .map_err(|error| format!("could not open a terminal device: {}", error))?;
 
-    // Spawn a shell into the pty
-    let mut child = pair.slave.spawn_command(shell_command(&directory)).unwrap();
+    // Spawn a shell into the pty: the user's, or failing that one of the
+    // shells every system has.
+    let mut child = None;
+    let mut failures = vec![];
+    for shell in shells() {
+        match pair.slave.spawn_command(shell_command(&shell, &directory)) {
+            Ok(spawned) => {
+                child = Some(spawned);
+                break;
+            }
+            Err(error) => failures.push(format!("{}: {}", shell, error)),
+        }
+    }
+    let mut child = child.ok_or_else(|| format!("could not start a shell ({})", failures.join("; ")))?;
 
     // The child holds its own handle to the slave side. Ours has to be closed,
     // otherwise reads on the master never end after the shell exits.
     drop(pair.slave);
 
+    let streams = pair
+        .master
+        .try_clone_reader()
+        .and_then(|reader| pair.master.take_writer().map(|writer| (reader, writer)));
+    let (mut reader, mut writer) = match streams {
+        Ok(streams) => streams,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("could not attach to the terminal device: {}", error));
+        }
+    };
+    let master = pair.master;
+
     // Kill-watcher: blocks on `kill_rx.recv()` until the sender drops (or
-    // someone explicitly sends a unit). Killing the child closes the slave's
-    // pty fds, which causes the master reader to hit EOF; the output thread
-    // below then reaps the child.
+    // someone explicitly sends a unit). Hanging up on the shell closes the
+    // slave's pty fds, which causes the master reader to hit EOF; the output
+    // thread below then reaps the child.
     let (kill_tx, kill_rx) = mpsc::channel::<()>();
     let mut killer = child.clone_killer();
+    let shell_pid = child.process_id();
+    let exited = Arc::new(AtomicBool::new(false));
+    let exited_for_kill = exited.clone();
     thread::spawn(move || {
         let _ = kill_rx.recv();
+        // A shell that has exited was already reaped: its process id may
+        // belong to another process by now.
+        if exited_for_kill.load(Ordering::SeqCst) {
+            return;
+        }
         let _ = killer.kill();
-    });
 
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let mut writer = pair.master.take_writer().unwrap();
-    let master = pair.master;
+        // That was a hangup, which a shell may ignore. One that does keeps
+        // the PTY open, and with it this terminal's threads and file
+        // descriptors, for as long as the app runs.
+        let asked = Instant::now();
+        while asked.elapsed() < HANGUP_GRACE {
+            if exited_for_kill.load(Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        if let Some(pid) = shell_pid {
+            if !exited_for_kill.load(Ordering::SeqCst) {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+    });
 
     // Read raw output from the pty
     // Bounded: see MAX_PENDING_READS.
@@ -279,6 +337,7 @@ pub fn start(
 
         // The shell has exited (or was killed): reap it and say so.
         let _ = child.wait();
+        exited.store(true, Ordering::SeqCst);
         let _ = output_sender.send(flow.next(vec![TerminalCommand::TerminalCommandSequence {
             command: CHILD_EXITED.to_string(),
         }]));
@@ -316,12 +375,35 @@ pub fn start(
         }
     });
 
-    Api {
+    Ok(Api {
         run_tx,
         resize_tx,
         kill_tx,
         flow,
+    })
+}
+
+/// What to show in a terminal whose shell could not be started, as the
+/// commands a program's output would be.
+pub fn start_failure_notice(error: &str) -> Vec<TerminalCommand> {
+    Stream::new().feed(format!("\x1b[31mThis terminal could not be started: {}\x1b[0m\r\n", error).as_bytes())
+}
+
+/// The shells to try, in order: the user's own, then the ones every system
+/// has. A `$SHELL` that points nowhere must not mean no terminal at all.
+fn shells() -> Vec<String> {
+    let mut shells = vec![];
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.is_empty() {
+            shells.push(shell);
+        }
     }
+    for fallback in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if !shells.iter().any(|shell| shell == fallback) {
+            shells.push(fallback.to_string());
+        }
+    }
+    shells
 }
 
 /// Some(true) when the command starts a synchronized update, Some(false) when
@@ -334,9 +416,8 @@ fn synchronized_update(command: &TerminalCommand) -> Option<bool> {
     }
 }
 
-fn shell_command(directory: &str) -> CommandBuilder {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut cmd = CommandBuilder::new(&shell);
+fn shell_command(shell: &str, directory: &str) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(shell);
     // -l makes it a login shell (sources .zprofile/.zlogin),
     // -i makes it interactive (sources .zshrc, including oh-my-zsh)
     cmd.arg("-l");

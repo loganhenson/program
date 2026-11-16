@@ -31,3 +31,7 @@ preflight = { path = "../../preflight" }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+# the mock runtime, for tests of how handlers behave
+tauri = { version = "3.0.0-alpha.6", features = ["test"] }

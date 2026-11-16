@@ -1077,7 +1077,6 @@ name = "filetree"
 version = "0.1.0"
 dependencies = [
  "serde",
- "walkdir",
 ]
 
 [[package]]
@@ -4331,6 +4330,7 @@ dependencies = [
 name = "terminal"
 version = "0.5.0"
 dependencies = [
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",
