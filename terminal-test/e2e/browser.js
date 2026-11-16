@@ -338,6 +338,90 @@ const tests = {
     ok(took < 10000, `it took ${took}ms for the shell to answer after Ctrl+C`)
   },
 
+  'scrollback that is out of view takes the room it needs, and is there when it is scrolled to or copied': async t => {
+    // Blocks of scrollback that are out of view are not laid out; each says
+    // how tall it is meanwhile. If that is not exactly the height it has when
+    // it is laid out, the scroll bar lies and text jumps while scrolling.
+    // (The flood above has already filled the scrollback; these go after it.)
+    await t.command('seq 1 3000', /^3000$/)
+    await sleep(600)
+    const scrollbackHeight = () => t.page.evaluate(() => Math.round(document.querySelector('.terminal-scrollback').getBoundingClientRect().height))
+    // the height with every block laid out, as it was before blocks could be skipped
+    const laidOutHeight = async () => {
+      const style = await t.page.addStyleTag({ content: '.terminal-scrollback-block { content-visibility: visible !important }' })
+      const height = await scrollbackHeight()
+      await style.evaluate(node => node.remove())
+      return height
+    }
+    const measure = () => t.page.evaluate(() => {
+      const scroller = document.querySelector('.terminal.overflow-y-scroll')
+      const view = scroller.getBoundingClientRect()
+      const rows = [...document.querySelectorAll('.terminal-scrollback .terminal-row')]
+      const visible = rows
+        .filter(row => { const r = row.getBoundingClientRect(); return r.bottom > view.top + 1 && r.top < view.bottom - 1 })
+        .map(row => row.innerText.trim())
+      return { rows: rows.length, blocks: document.querySelectorAll('.terminal-scrollback-block').length, visible }
+    })
+    // put the row that is `fromEnd` rows above the end of the scrollback at the top of the view
+    const scrollTo = fromEnd => t.page.evaluate(fromEnd => {
+      const scroller = document.querySelector('.terminal.overflow-y-scroll')
+      const scrollback = document.querySelector('.terminal-scrollback')
+      scroller.scrollTop = scrollback.offsetTop + scrollback.offsetHeight - fromEnd * 24
+    }, fromEnd)
+    const numbers = rows => rows.filter(row => /^\d+$/.test(row)).map(Number)
+    const consecutive = list => list.every((n, i) => i === 0 || n === list[i - 1] + 1)
+
+    const atBottom = await measure()
+    ok(atBottom.rows >= 3000 && atBottom.blocks >= 10, `the scrollback holds ${atBottom.rows} rows in ${atBottom.blocks} blocks`)
+    const short = await scrollbackHeight()
+    // none of these lines wraps: each is one row of 24 pixels
+    equal(short, atBottom.rows * 24, `the height of ${atBottom.rows} rows of scrollback`)
+    equal(short, await laidOutHeight(), 'the height the scrollback says it has, against its height laid out')
+
+    await scrollTo(1500)
+    await sleep(300)
+    const middle = numbers((await measure()).visible)
+    ok(middle.length >= 10 && consecutive(middle), `the rows in view 1500 rows up: ${middle.join(' ')}`)
+    ok(Math.abs(middle[0] - 1500) < 40, `1500 rows up shows line ${middle[0]}`)
+    await scrollTo(atBottom.rows)
+    await sleep(300)
+    ok((await measure()).visible.filter(row => row !== '').length >= 10, 'nothing is shown at the top of the scrollback')
+    equal(await scrollbackHeight(), short, 'the height after scrolling through it')
+
+    // text from blocks that are out of view is copied like any other
+    await t.page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.terminal-scrollback .terminal-row')]
+      const range = document.createRange()
+      range.setStartBefore(rows.find(row => row.textContent.trim() === '1000'))
+      range.setEndAfter(rows.find(row => row.textContent.trim() === '2500'))
+      getSelection().removeAllRanges()
+      getSelection().addRange(range)
+    })
+    await t.page.keyboard.press('Meta+c')
+    await sleep(400)
+    const copied = (await t.page.evaluate(() => window.__clipboard || '')).split('\n')
+    equal([copied.length, copied[0], copied[750], copied[1500]], [1501, '1000', '1750', '2500'], 'lines copied from 1000 to 2500')
+    await t.page.evaluate(() => getSelection().removeAllRanges())
+    await scrollTo(0)
+
+    // lines longer than the terminal is wide take more than one row each
+    await t.command(`for i in $(seq 1 400); do printf '%0250d\\n' $i; done; echo wra""pped`, /^wrapped/)
+    await sleep(600)
+    const long = await scrollbackHeight()
+    ok(long > short + 400 * 24, `400 long lines added ${long - short} pixels`)
+    equal(long, await laidOutHeight(), 'with long lines: the height the scrollback says it has, against its height laid out')
+
+    // ...and a different number of rows at another width
+    await t.page.setViewportSize({ width: 520, height: 560 })
+    await sleep(1500)
+    const narrow = await scrollbackHeight()
+    ok(narrow > long, `a narrower window made the scrollback ${narrow - long} pixels taller`)
+    equal(narrow, await laidOutHeight(), 'in a narrower window: the height the scrollback says it has, against its height laid out')
+    await t.page.setViewportSize({ width: 900, height: 560 })
+    await sleep(1500)
+    equal(await scrollbackHeight(), await laidOutHeight(), 'back at the first width: the height the scrollback says it has, against its height laid out')
+  },
+
   'a new tab gets the size of the window, and closing the last shell quits': async t => {
     await t.page.locator('[title="Open another terminal"]').click()
     await sleep(1500)
