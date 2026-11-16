@@ -1960,7 +1960,11 @@ mod tests {
       jobs.send(job).unwrap();
       thread::sleep(std::time::Duration::from_millis(10));
     }
-    thread::sleep(std::time::Duration::from_millis(600));
+    // (as long as it takes on a slow machine: sleeping 5ms can take far longer there)
+    let sent = std::time::Instant::now();
+    while locked(&ran).last() != Some(&20) && sent.elapsed() < std::time::Duration::from_secs(30) {
+      thread::sleep(std::time::Duration::from_millis(10));
+    }
 
     let ran = locked(&ran).clone();
     assert_eq!(ran.last(), Some(&20), "the last request was not answered");
@@ -1981,7 +1985,10 @@ mod tests {
     jobs.send(1).unwrap();
     thread::sleep(std::time::Duration::from_millis(200));
     jobs.send(2).unwrap();
-    thread::sleep(std::time::Duration::from_millis(200));
+    let sent = std::time::Instant::now();
+    while locked(&ran).is_empty() && sent.elapsed() < std::time::Duration::from_secs(30) {
+      thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert_eq!(locked(&ran).clone(), vec![2]);
   }
 
