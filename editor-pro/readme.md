@@ -17,6 +17,18 @@ cd .. && npm install          # install npm deps (elm, tauri cli, esbuild, etc.)
 npm run watch                 # live dev: elm + js + css + tauri all in concurrent watch
 ```
 
+Two environment variables help when running the app from a terminal:
+
+- `DEV_DIRECTORY=some/project` opens that project at startup instead of the
+  welcome screen (`npm start` uses it).
+- `EDITOR_DOM_DUMP=/tmp/editor.html` makes the app write what it is showing
+  (the page's DOM) to that file once a second, so its state can be checked
+  from a script or rendered in a browser without taking a screenshot.
+
+```bash
+npm test                      # Elm tests (tests/), then the Rust tests
+```
+
 ## Build a release DMG locally
 
 ```bash

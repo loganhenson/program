@@ -2,7 +2,7 @@
  "scripts": {
   "tauri": "tauri",
   "build": "npm run elm:optimize && npm run js && npm run css && npx tauri build",
-  "test": "cd src-tauri/src/filetree && cargo test",
+  "test": "elm-test && cd src-tauri && cargo test && cd src/filetree && cargo test",
   "start": "cd src-tauri && DEV_DIRECTORY=~/testing-codebase cargo run",
   "dev": "npm run elm:optimize && npm run js && npm run css && npx tauri dev",
   "js": "esbuild js/main.js --bundle --outfile=built/js/main.js",

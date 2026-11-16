@@ -567,40 +567,59 @@ viewDirectory fileTree children activeFile openDirectories selectedPaths creatin
                 [ fileTreeIcon [] fileDirectory
                 , basename fileTree.path |> text
                 ]
+        isSelected =
+            Dict.member fileTree.path selectedPaths
+
+        -- The directory's own row is highlighted like any selected entry.
+        selected =
+            classList [ ( "bg-blue-700", isSelected ) ]
+
+        -- What is inside a selected directory goes with it (deleting the
+        -- directory deletes all of it), so it is marked as part of the
+        -- selection, but quietly: a tint and a line down the side rather
+        -- than the solid highlight of the row that is actually selected.
+        selectedContents =
+            if isSelected then
+                [ class "file-tree-selected-contents"
+                , style "background" "rgba(43, 108, 176, 0.16)"
+                , style "box-shadow" "inset 2px 0 0 rgba(66, 153, 225, 0.7)"
+                ]
+
+            else
+                []
     in
     div
-        [ class "flex flex-col fill-current text-white items-center pl-6 w-full"
+        [ class "flex flex-col fill-current text-white items-center w-full"
         , style "min-width" "max-content"
-        , classList
-            [ ( "bg-blue-700", Dict.member fileTree.path selectedPaths )
-            ]
         ]
         [ case Dict.member fileTree.path openDirectories of
             True ->
                 div [ class "w-full" ]
                     [ div
-                        [ class "flex" ]
+                        [ class "flex pl-6", selected ]
                         [ fileTreeIcon
                             [ onClick <| CloseDirectory fileTree.path
                             ]
                             triangleDown
                         , nameElement
                         ]
-                    , case ( Maybe.map .type_ creatingNew, Maybe.map (\v -> v.path == fileTree.path) creatingNew, creatingNew ) of
-                        ( Just FileOrDirectoryDirectory, Just True, Just justCreatingNew ) ->
-                            viewCreatingNewDirectory justCreatingNew maybeError
+                    , div (class "pl-6" :: selectedContents)
+                        [ case ( Maybe.map .type_ creatingNew, Maybe.map (\v -> v.path == fileTree.path) creatingNew, creatingNew ) of
+                            ( Just FileOrDirectoryDirectory, Just True, Just justCreatingNew ) ->
+                                viewCreatingNewDirectory justCreatingNew maybeError
 
-                        ( Just FileOrDirectoryFile, Just True, Just justCreatingNew ) ->
-                            viewCreatingNewFile justCreatingNew maybeError
+                            ( Just FileOrDirectoryFile, Just True, Just justCreatingNew ) ->
+                                viewCreatingNewFile justCreatingNew maybeError
 
-                        _ ->
-                            text ""
-                    , div [] (List.foldr (\child acc -> viewChildren child activeFile openDirectories selectedPaths creatingNew maybeError :: acc) [] children)
+                            _ ->
+                                text ""
+                        , div [] (List.foldr (\child acc -> viewChildren child activeFile openDirectories selectedPaths creatingNew maybeError :: acc) [] children)
+                        ]
                     ]
 
             False ->
                 div
-                    [ class "flex w-full" ]
+                    [ class "flex w-full pl-6", selected ]
                     [ fileTreeIcon [ onClick <| OpenDirectory (treeNodeToFileOrDirectory fileTree) ] triangleRight
                     , nameElement
                     ]

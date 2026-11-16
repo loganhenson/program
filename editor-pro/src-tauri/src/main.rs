@@ -376,6 +376,20 @@ fn bell() {
   terminal::bell::ring()
 }
 
+/// Diagnostics: with `EDITOR_DOM_DUMP=/some/file` set, the frontend reports
+/// what it is showing (the page's DOM) once a second and it is written there.
+/// It lets the app be checked from outside without a screenshot.
+#[tauri::command]
+fn dom_dump(html: Option<String>) -> bool {
+  let Some(path) = std::env::var_os("EDITOR_DOM_DUMP") else {
+    return false;
+  };
+  if let Some(html) = html {
+    let _ = fs::write(path, html);
+  }
+  true
+}
+
 /// A project to open as soon as the app has started, instead of showing the
 /// welcome screen: the folder named by `DEV_DIRECTORY` (see `npm start`).
 #[tauri::command]
@@ -428,7 +442,7 @@ fn main() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .manage(tools.clone())
-    .invoke_handler(tauri::generate_handler![preflight, get_recent_projects, bell, startup_directory])
+    .invoke_handler(tauri::generate_handler![preflight, get_recent_projects, bell, startup_directory, dom_dump])
     .menu(|handle| {
       Menu::with_items(
         handle,

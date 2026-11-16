@@ -37,6 +37,11 @@ async function proceed() {
 
   await emit('frontend-ready', null)
 
+  // Diagnostics, off unless EDITOR_DOM_DUMP is set (see `dom_dump` in main.rs)
+  if (await invoke('dom_dump', { html: null })) {
+    setInterval(() => invoke('dom_dump', { html: document.documentElement.outerHTML }), 1000)
+  }
+
   // `DEV_DIRECTORY=some/project npm start` opens that project right away
   const directory = await invoke('startup_directory')
   if (directory) {

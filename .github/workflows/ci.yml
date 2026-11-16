@@ -30,6 +30,7 @@ jobs:
           cache-dependency-path: |
             editor/package-lock.json
             terminal-test/package-lock.json
+            editor-pro/package-lock.json
 
       - name: editor (lib) — install + test
         working-directory: editor
@@ -39,6 +40,12 @@ jobs:
 
       - name: terminal-test — install + test
         working-directory: terminal-test
+        run: |
+          npm ci
+          npx elm-test
+
+      - name: editor-pro — install + test
+        working-directory: editor-pro
         run: |
           npm ci
           npx elm-test
