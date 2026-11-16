@@ -3,6 +3,7 @@ module WorkspaceTest exposing (suite)
 import Editor
 import Editor.Lib
 import Editor.Msg
+import Editor.RawKeyboard
 import Expect
 import FileTree.FileTree as FileTree
 import FileTree.Types exposing (Children(..), FileOrDirectory, FileOrDirectoryType(..), FileTree, FileTreeAndFlat)
@@ -60,6 +61,7 @@ workspace =
     , focused = Types.FileTree
     , fuzzyFinder = { fuzzyFinderInputValue = "", fuzzyFinderHighlightedIndex = 0, fuzzyFindResults = [] }
     , closeArmed = False
+    , saved = Nothing
     }
 
 
@@ -72,6 +74,36 @@ editing path =
         , activeFile = Just path
         , fileHistory = [ ( path, "as it was opened" ) ]
     }
+
+
+{-| With a file open as it is on disk.
+-}
+withFileOpen : String -> String -> Workspace
+withFileOpen path contents =
+    { workspace
+        | editor = Just (editorWith path contents)
+        , activeFile = Just path
+        , fileHistory = [ ( path, contents ) ]
+        , saved = Just ( path, contents )
+    }
+
+
+{-| The same project with the text in the editor replaced, as typing does.
+-}
+typing : String -> Workspace -> Workspace
+typing contents ws =
+    { ws | editor = Maybe.map (\editor -> editorWith editor.file contents) ws.editor }
+
+
+key : { code : String, metaKey : Bool } -> Editor.Msg.Msg
+key { code, metaKey } =
+    Editor.Msg.RawKeyboardMsg
+        (Editor.RawKeyboard.Down { key = "s", code = code, shiftKey = False, altKey = False, ctrlKey = False, metaKey = metaKey })
+
+
+commandS : Editor.Msg.Msg
+commandS =
+    key { code = "KeyS", metaKey = True }
 
 
 text : Workspace -> Maybe String
@@ -120,6 +152,73 @@ suite =
                             , .terminalShowing >> Expect.equal True
                             , .fileTree >> Maybe.map (.flatTree >> List.length) >> Expect.equal (Just 3)
                             ]
+            ]
+        , describe "when the open file is changed on disk by something else"
+            [ test "a file without unsaved edits takes the new contents" <|
+                \_ ->
+                    withFileOpen "/project/a.js" "as opened"
+                        |> Lib.externalChange "/project/a.js" "changed outside"
+                        |> Expect.all
+                            [ Tuple.first >> text >> Expect.equal (Just "changed outside")
+                            , Tuple.second >> Expect.equal Nothing
+                            ]
+            , test "unsaved edits are kept, and said to have been kept" <|
+                -- they used to be replaced by what was on disk, without a word
+                \_ ->
+                    withFileOpen "/project/a.js" "as opened"
+                        |> typing "as opened, and edited"
+                        |> Lib.externalChange "/project/a.js" "changed outside"
+                        |> Expect.all
+                            [ Tuple.first >> text >> Expect.equal (Just "as opened, and edited")
+                            , Tuple.second >> Maybe.map (String.contains "a.js") >> Expect.equal (Just True)
+                            , Tuple.second >> Maybe.map (String.contains "unsaved edits were kept") >> Expect.equal (Just True)
+                            ]
+            , test "once the edits are saved, a later change from outside is taken again" <|
+                \_ ->
+                    withFileOpen "/project/a.js" "as opened"
+                        |> typing "edited"
+                        |> Lib.noteSave commandS
+                        |> Lib.externalChange "/project/a.js" "formatted by another program"
+                        |> Expect.all
+                            [ Tuple.first >> text >> Expect.equal (Just "formatted by another program")
+                            , Tuple.second >> Expect.equal Nothing
+                            ]
+            , test "an edit that was typed and then typed back is not an unsaved edit" <|
+                \_ ->
+                    withFileOpen "/project/a.js" "as opened"
+                        |> typing "as opened!"
+                        |> typing "as opened"
+                        |> Lib.externalChange "/project/a.js" "changed outside"
+                        |> Tuple.first
+                        |> text
+                        |> Expect.equal (Just "changed outside")
+            , test "a change that is what the editor already has says nothing and changes nothing" <|
+                \_ ->
+                    withFileOpen "/project/a.js" "as opened"
+                        |> typing "same text"
+                        |> Lib.externalChange "/project/a.js" "same text"
+                        |> Expect.all
+                            [ Tuple.first >> text >> Expect.equal (Just "same text")
+                            , Tuple.second >> Expect.equal Nothing
+
+                            -- and what is on disk is now what the editor has
+                            , Tuple.first >> Lib.hasUnsavedEdits "/project/a.js" >> Expect.equal False
+                            ]
+            , test "a change to a file that is not the open one is left alone" <|
+                \_ ->
+                    withFileOpen "/project/a.js" "as opened"
+                        |> Lib.externalChange "/project/b.js" "b changed"
+                        |> Expect.all
+                            [ Tuple.first >> text >> Expect.equal (Just "as opened")
+                            , Tuple.second >> Expect.equal Nothing
+                            ]
+            , test "any other key is not a save" <|
+                \_ ->
+                    withFileOpen "/project/a.js" "as opened"
+                        |> typing "edited"
+                        |> Lib.noteSave (key { code = "KeyS", metaKey = False })
+                        |> Lib.hasUnsavedEdits "/project/a.js"
+                        |> Expect.equal True
             ]
         , describe "after the open file was deleted"
             [ test "a file that was opened before can be opened again" <|

@@ -686,6 +686,7 @@ update msg model_ =
                                                 , fileTree = nextFileTree
                                                 , fileHistory = addToFileHistory w.fileHistory path contents
                                                 , activeFile = Just path
+                                                , saved = Just ( path, contents )
                                                 , focused = Editor
                                             }
                                         )
@@ -1294,59 +1295,18 @@ applyExternalFileChange envelope model =
                     ( model, Cmd.none )
 
                 Just ws ->
-                    case ( ws.activeFile == Just path, ws.editor ) of
-                        ( True, Just editor ) ->
-                            let
-                                currentContents =
-                                    Editor.Lib.renderableLinesToContents editor.travelable.renderableLines
-                            in
-                            if currentContents == contents then
-                                ( model, Cmd.none )
+                    let
+                        ( nextWs, kept ) =
+                            Lib.externalChange path contents ws
+                    in
+                    ( WL.mapWorkspaceByPath workspaceId (always nextWs) model
+                    , case kept of
+                        Just message ->
+                            Task.perform (NotificationReceivedAt { source = "Editor", type_ = Notification.Types.Warning, message = message }) Time.now
 
-                            else
-                                let
-                                    newLines =
-                                        Editor.Lib.contentsToRenderableLines contents
-
-                                    currentCursor =
-                                        editor.travelable.cursorPosition
-
-                                    clampedY =
-                                        max 0 (min (List.length newLines - 1) currentCursor.y)
-
-                                    clampedLineLength =
-                                        List.Extra.getAt clampedY newLines
-                                            |> Maybe.map (.text >> String.length)
-                                            |> Maybe.withDefault 0
-
-                                    clampedX =
-                                        max 0 (min clampedLineLength currentCursor.x)
-
-                                    travelable =
-                                        editor.travelable
-
-                                    newTravelable =
-                                        { travelable
-                                            | renderableLines = newLines
-                                            , cursorPosition = { x = clampedX, y = clampedY }
-                                        }
-
-                                    newEditor =
-                                        { editor | travelable = newTravelable }
-                                in
-                                ( WL.mapWorkspaceByPath workspaceId
-                                    (\w ->
-                                        { w
-                                            | editor = Just newEditor
-                                            , fileHistory = addToFileHistory w.fileHistory path contents
-                                        }
-                                    )
-                                    model
-                                , Cmd.none
-                                )
-
-                        _ ->
-                            ( model, Cmd.none )
+                        Nothing ->
+                            Cmd.none
+                    )
 
         Err _ ->
             ( model, Cmd.none )

@@ -77,6 +77,7 @@ empty projectPath =
     , focused = FileTree
     , fuzzyFinder = FuzzyFinder.FuzzyFinder.init
     , closeArmed = False
+    , saved = Nothing
     }
 
 
