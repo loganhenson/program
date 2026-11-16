@@ -333,7 +333,19 @@ styles =
     .terminal-row {
         height: var(--line-height);
         white-space: pre;
-        overflow: hidden;
+        /* clip, not hidden: `hidden` makes every row a scroll container of
+           its own, and the browser keeps more for each of those. There are
+           ten thousand rows of scrollback. */
+        overflow: clip;
+    }
+
+    /* The scrollback is kept in blocks. A full one that is out of view is
+       not laid out or painted until it is scrolled to: with ten thousand rows
+       that is a quarter of the time a burst of output takes, and a quarter of
+       the memory the page ends up holding. Each block says how tall it is
+       meanwhile (see viewFinishedScrollbackBlock). */
+    .terminal-scrollback-block {
+        content-visibility: auto;
     }
 
     .terminal-scrollback .terminal-row {
@@ -395,20 +407,67 @@ viewScrollback width scrollback =
         [ class "terminal-scrollback"
         , style "width" ("calc(" ++ String.fromInt width ++ " * var(--terminal-cell-width, 1ch) + 1px)")
         ]
-        ((scrollback.current :: scrollback.blocks)
-            |> List.reverse
-            |> List.map (\block -> ( String.fromInt block.id, Html.Lazy.lazy viewScrollbackBlock block ))
+        (List.foldl
+            (\block rows ->
+                let
+                    blockRows =
+                        scrollbackBlockRows width block
+                in
+                -- (see viewFinishedScrollbackBlock for why the rows are in the key)
+                ( String.fromInt block.id ++ "/" ++ String.fromInt blockRows
+                , viewFinishedScrollbackBlock blockRows block
+                )
+                    :: rows
+            )
+            [ ( "filling", Html.Lazy.lazy viewScrollbackRows scrollback.current ) ]
+            scrollback.blocks
         )
 
 
-viewScrollbackBlock : ScrollbackBlock -> Html Msg
-viewScrollbackBlock block =
+{-| A block of scrollback that is full. While it is out of view the browser
+does not lay it out, and takes it to be as tall as it is told here: the rows
+its lines take at this width.
+
+The browser prefers the height it last drew an element at to the one it is
+told, so the element must never have been drawn at another height. That is why
+the block that is still filling is not drawn this way (it becomes a new
+element when it is full), and why the number of rows is part of the key: a
+block whose lines wrap differently at a new width is made again.
+-}
+viewFinishedScrollbackBlock : Int -> ScrollbackBlock -> Html Msg
+viewFinishedScrollbackBlock rows block =
+    div
+        [ class "terminal-scrollback-block"
+        , style "contain-intrinsic-height" ("calc(var(--line-height) * " ++ String.fromInt rows ++ ")")
+        ]
+        [ Html.Lazy.lazy viewScrollbackRows block ]
+
+
+viewScrollbackRows : ScrollbackBlock -> Html Msg
+viewScrollbackRows block =
     div []
         (List.foldl
             (\line rows -> viewRow False line.wrapped (List.concatMap breakable line.spans) :: rows)
             []
             block.lines
         )
+
+
+{-| The rows a block of scrollback takes in a terminal of this width: a line
+longer than the terminal is wide goes on on the next row.
+-}
+scrollbackBlockRows : Int -> ScrollbackBlock -> Int
+scrollbackBlockRows width block =
+    List.foldl (\line rows -> rows + scrollbackLineRows width line.columns) 0 block.lines
+
+
+scrollbackLineRows : Int -> Int -> Int
+scrollbackLineRows width columns =
+    if width < 1 then
+        1
+
+    else
+        max 1 ((columns + width - 1) // width)
 
 
 {-| A run of stretched characters is one box that cannot be broken. In the

@@ -480,9 +480,16 @@ fn shell_command(shell: &str, directory: &str) -> CommandBuilder {
     cmd.arg("-i");
     cmd.cwd(expand_home(directory));
 
-    // Inherit current process env - portable-pty by default uses minimal env
-    for (key, value) in std::env::vars() {
-        cmd.env(key, value);
+    // The shell gets the app's environment (`vars_os`, not `vars`: that one
+    // panics on a value that is not UTF-8), except what is meant for the
+    // app's own page. A new command already starts from the environment, so
+    // leaving a variable out takes removing it.
+    for (key, value) in std::env::vars_os() {
+        if crate::page_memory::is_for_shells(&key) {
+            cmd.env(key, value);
+        } else {
+            cmd.env_remove(key);
+        }
     }
 
     cmd.env("TERM", "xterm-256color");

@@ -170,3 +170,9 @@ jobs:
       - name: cargo check
         working-directory: ${{ matrix.app }}/src-tauri
         run: cargo check
+
+      # The apps' own backend tests (EditorPro's file handling, saving,
+      # deleting, quitting). They need the frontend built, as above.
+      - name: cargo test
+        working-directory: ${{ matrix.app }}/src-tauri
+        run: cargo test --no-fail-fast

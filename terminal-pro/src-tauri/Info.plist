@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	Merged into the app's Info.plist when it is bundled.
+
+	The memory the page's JavaScript engine plans for: 1 GB, whatever the
+	machine has. See terminal-server/src/page_memory.rs. It has to be in the
+	app's environment from the moment it starts (setting it in `main` is too
+	late), which is what this does for an app started from the Finder, the
+	Dock or `open`.
+	-->
+	<key>LSEnvironment</key>
+	<dict>
+		<key>__XPC_JSC_forceRAMSize</key>
+		<string>1073741824</string>
+	</dict>
+</dict>
+</plist>
