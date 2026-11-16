@@ -5,7 +5,7 @@ import Dict
 import Editor.Constants as Constants
 import Editor.Msg exposing (Config, History, HistoryIndexAndHistory, Model, Ports, RenderableLine, Selection, Symbol, Travelable)
 import Editor.Styles exposing (cursorStyles, selectionStyles)
-import Editor.Syntax.Language exposing (getSyntaxFromFileName)
+import Editor.Syntax.Language exposing (getSyntax)
 import Editor.Words exposing (getWordUntilEnd)
 import Html
 import Html.Attributes
@@ -94,7 +94,7 @@ changeFile model file contents =
             in
             ( { nextModel
                 | file = file
-                , syntax = getSyntaxFromFileName file
+                , syntax = getSyntax file contents
                 , normalBuffer = Editor.Msg.NormalBuffer 0 "" ""
                 , doubleTripleClick = ( 1, Editor.Msg.EditorCoordinate 0 0 )
                 , errors = []
@@ -122,7 +122,7 @@ loadNewFile model file contents =
     in
     ( { nextModel
         | file = file
-        , syntax = getSyntaxFromFileName file
+        , syntax = getSyntax file contents
         , normalBuffer = Editor.Msg.NormalBuffer 0 "" ""
         , doubleTripleClick = ( 1, Editor.Msg.EditorCoordinate 0 0 )
         , errors = []
@@ -689,7 +689,7 @@ init active file contents config ports =
             False ->
                 Editor.Msg.Insert
     , file = file
-    , syntax = getSyntaxFromFileName file
+    , syntax = getSyntax file contents
     , config = config
     , normalBuffer = Editor.Msg.NormalBuffer 0 "" ""
     , active = active

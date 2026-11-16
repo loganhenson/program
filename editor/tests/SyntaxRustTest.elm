@@ -81,6 +81,10 @@ suite =
                 \_ ->
                     getSyntaxFromFileName "/project/users"
                         |> Expect.equal Nothing
+            , test "a file named rs is not" <|
+                \_ ->
+                    getSyntaxFromFileName "/project/rs"
+                        |> Expect.equal Nothing
             ]
         , describe "Rust: a whole line"
             [ test "a use declaration" <|
