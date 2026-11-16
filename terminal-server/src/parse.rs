@@ -1,69 +1,48 @@
-extern crate serde_json;
+//! Escape sequence parser.
+//!
+//! This is a streaming state machine modelled on the DEC VT500 parser
+//! (https://vt100.net/emu/dec_ansi_parser) with the xterm extensions modern
+//! programs rely on. The important property is that *every* sequence
+//! terminates: anything we do not understand is consumed and dropped, it can
+//! never swallow the output that follows it.
+//!
+//! The parser turns a character stream into `TerminalCommand`s, which are
+//! serialized to JSON and applied to the screen by the Elm `terminal` library.
 
-use base64::decode;
-use lazy_static::lazy_static;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-const IGNORED_SEQUENCES: [&str; 31] = [
-    "[>4;m",        // ??
-    "[22;2t",       // ??
-    "[22;1t",       // ??
-    "[22;0;0t",     // ??
-    "[0%m",         // ??
-    "[>4;2m",       // vim modifyOtherKeys option
-    "(A",           // Set United Kingdom G0 character set ??
-    ")A",           // Set United Kingdom G0 character set ??
-    "(0",           // Designate Character Set – DEC Line Drawing	Enables DEC Line Drawing Mode
-    "(B",           // Designate Character Set – US ASCII	Enables ASCII Mode (Default)?
-    ")B",           // Set United States G0 character set ??
-    "[200~",        // bracketed paste start
-    "[201~",        // bracketed paste end
-    "[?1006;1000h", // mouse tracking ??
-    "[?1006;1000l", // mouse tracking ??
-    "[>c",          // ??
-    "[6n",          // ??
-    "[23;0;0t", // restore window/icon title (https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Functions-using-CSI-_-ordered-by-the-final-character_s_)
-    "[23;0t",   // more title stuff
-    "[112",     // reset cursor color
-    "]112",     // ??
-    "[0 q",     // blinking block cursor
-    "[1 q",     // blinking block cursor
-    "[2 q",     // solid block cursor
-    "[3 q",     // blinking underscore cursor
-    "[4 q",     // solid underscore cursor
-    "[5 q",     // blinking vertical bar cursor
-    "[6 q",     // solid vertical bar cursor
-    "[0;1;7m",  // inverse and bold
-    "=", // DECKPAM	Enable Keypad Application Mode	Keypad keys will emit their Application Mode sequences.
-    ">", // DECKPNM	Enable Keypad Numeric Mode	Keypad keys will emit their Numeric Mode sequences.
-];
-const QUERY_SEQUENCES: [&str; 5] = [
-    "]10;?\u{1b}\\", // OSC QUERY: Change VT100 text foreground color to ?
-    "]10;?\u{7}",    // OSC QUERY: Change VT100 text foreground color to ? (bell form)
-    "]11;?\u{1b}\\", // OSC QUERY: Change VT100 text background color to ?
-    "]11;?\u{7}",    // OSC QUERY: Change VT100 text background color to ? (bell form)
-    "[0c", // Device Attributes	Report the terminal identity. Will emit "\x1b[?1;0c", indicating "VT101 with No Options".
-];
-const USED_SEQUENCES: [&str; 34] = [
-    "[?1049h", // use alternate buffer
-    "[?1049l", // go back to main buffer
-    "[?6h",    // ??
-    "[?6l",    // ??
-    "[J", "[0J", "[1J", "[2J", // Erase in Display
-    "[K", "[0K", "[1K", "[2K", // Erase in Line
-    "[m", "[L", "[P",  //
-    "[M",  // Delete single line
-    "[H",  // HTS	Horizontal Tab Set	Sets a tab stop in the current column the cursor is in.
-    "[;H", // HTS	Horizontal Tab Set	Sets a tab stop in the current column the cursor is in.
-    "[r", // set scroll region (default 1 (top) and screen height (bottom)). This is the version without the arguments.
-    "#8", // fill the screen with E
-    "E",  // Next Line (\n)
-    "D",  // Index (\n)
-    "M",  // Reverse Index (opposite of \n)
-    "[@", // Insert Character
-    "[X", // Erase Character
-    "[A", "[B", "[C", "[D", "[E", "[F", "[G", "[S", "[T",
+/// Longest CSI parameter/intermediate string we are willing to collect.
+const MAX_CSI_LENGTH: usize = 256;
+/// Longest OSC/DCS/APC payload we keep (large enough for OSC 52 clipboard
+/// writes). Longer payloads are consumed up to their terminator and dropped.
+const MAX_STRING_LENGTH: usize = 4 * 1024 * 1024;
+/// Upper bound for REP (repeat preceding character).
+const MAX_REPEAT: u32 = 65_535;
+
+/// DEC private modes that are forwarded to the screen as `[?{mode}h` / `[?{mode}l`.
+const PRIVATE_MODES: [u32; 22] = [
+    1,    // DECCKM: application cursor keys
+    5,    // DECSCNM: reverse video
+    6,    // DECOM: origin mode
+    7,    // DECAWM: auto wrap
+    9,    // X10 mouse reporting
+    25,   // DECTCEM: cursor visibility
+    47,   // alternate screen
+    1000, // mouse: button events
+    1002, // mouse: button + drag events
+    1003, // mouse: all motion events
+    1004, // focus in/out events
+    1006, // mouse: SGR encoding
+    1007, // alternate scroll (wheel sends arrows on the alternate screen)
+    1015, // mouse: urxvt encoding
+    1016, // mouse: SGR pixel encoding
+    1047, // alternate screen (clearing)
+    1048, // save/restore cursor
+    1049, // alternate screen + save/restore cursor
+    2004, // bracketed paste
+    2026, // synchronized output
+    2031, // color scheme change notifications
+    2048, // in-band resize notifications
 ];
 
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
@@ -91,574 +70,922 @@ pub enum TerminalCommand {
     TerminalCommandSequence {
         command: String,
     },
+    /// A sequence the program expects an answer to (cursor position, device
+    /// attributes, colors...). The screen owns the state needed to answer, so
+    /// these are forwarded like any other command and answered in order.
     TerminalCommandQuerySequence {
         command: String,
     },
+    /// Only produced by the one-shot `parse` function: the input ended in the
+    /// middle of a sequence. `Parser` keeps this state internally instead.
     TerminalCommandPartial(String),
     Text(String),
 }
 
-pub fn parse(data: &str, mut output: impl FnMut(TerminalCommand) -> ()) -> Vec<TerminalCommand> {
-    let mut collected: Vec<TerminalCommand> = vec![];
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+enum StringKind {
+    Osc,
+    Dcs,
+    Apc,
+    Pm,
+    Sos,
+}
 
-    // println!("{:?}", data);
-
-    let mut mid_sequence = false;
-    let mut subcollector = "".to_string();
-    let escape = String::from("\u{1b}");
-    let fake_escape = String::from("\u{b}");
-    let length = data.chars().count() - 1;
-
-    for (index, char) in data.chars().enumerate() {
-        // println!("{:?}, {:?}", mid_sequence, char);
-
-        if mid_sequence && String::from(char) == fake_escape {
-            continue;
+impl StringKind {
+    fn introducer(self) -> char {
+        match self {
+            StringKind::Osc => ']',
+            StringKind::Dcs => 'P',
+            StringKind::Apc => '_',
+            StringKind::Pm => '^',
+            StringKind::Sos => 'X',
         }
+    }
+}
 
-        if !mid_sequence && String::from(char) == escape {
-            if subcollector.len() != 0 {
-                // Handle Raw Output
-                let command = TerminalCommand::Text(subcollector.clone());
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
-            }
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+enum State {
+    Ground,
+    Escape,
+    EscapeIntermediate,
+    Csi,
+    CsiIgnore,
+    Str(StringKind),
+}
 
-            if index == length {
-                let command = TerminalCommand::TerminalCommandPartial(String::from("\u{1b}"));
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
-                continue;
-            }
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+enum Charset {
+    Ascii,
+    DecSpecialGraphics,
+}
 
-            mid_sequence = true;
+/// One CSI parameter: `;` separates parameters, `:` separates sub-parameters.
+type Param = Vec<Option<u32>>;
 
-            continue;
+pub struct Parser {
+    state: State,
+    text: String,
+    /// CSI parameter bytes (0x30-0x3F), including a leading private marker.
+    params: String,
+    /// CSI / ESC intermediate bytes (0x20-0x2F).
+    intermediates: String,
+    string: String,
+    string_overflowed: bool,
+    string_escape_pending: bool,
+    charsets: [Charset; 4],
+    active_charset: usize,
+    last_printed: Option<char>,
+}
+
+impl Default for Parser {
+    fn default() -> Self {
+        Parser::new()
+    }
+}
+
+impl Parser {
+    pub fn new() -> Parser {
+        Parser {
+            state: State::Ground,
+            text: String::new(),
+            params: String::new(),
+            intermediates: String::new(),
+            string: String::new(),
+            string_overflowed: false,
+            string_escape_pending: false,
+            charsets: [Charset::Ascii; 4],
+            active_charset: 0,
+            last_printed: None,
         }
+    }
 
-        subcollector.push(char);
-
-        if mid_sequence {
-            // Handle Ignored Sequences
-            if IGNORED_SEQUENCES.iter().any(|v| v == &subcollector) {
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
-
-            // Handle query sequences
-            if QUERY_SEQUENCES.iter().any(|v| v == &subcollector) {
-                let command = TerminalCommand::TerminalCommandQuerySequence {
-                    command: subcollector.to_string(),
-                };
-                collected.push(command.clone());
-                output(command);
-
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
-
-            // Handle raw sequences
-            if USED_SEQUENCES.iter().any(|v| v == &subcollector) {
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: subcollector.to_string(),
-                };
-                collected.push(command.clone());
-                output(command);
-
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
-
-            /* CSI - Control Sequence Introducer - Commands */
-            /* ESC [ */
-
-            // Handle commands with arguments
-            // Regex, don't use * in captures, as that will change the match order
-
-            // Esc[${Value}A	: Move cursor Value amount in ABCD direction
-            lazy_static! {
-                static ref REGEX_MOVE_CURSOR: Regex =
-                    Regex::new(r"^\[([0-9]+)([ABCDEFGLMPSTXmd@])$").unwrap();
-            }
-            match REGEX_MOVE_CURSOR.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndSingleArgument {
-                        command: String::from(
-                            "[".to_owned() + matches.get(2).map_or("", |m| m.as_str()),
-                        ),
-                        argument: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // Esc[${Value};${Value}H	: Move cursor to line Value and column Value
-            lazy_static! {
-                static ref REGEX_MOVE_CURSOR_TO_LINE_COL: Regex =
-                    Regex::new(r"^\[([0-9]+);([0-9]+)[H|f]$").unwrap();
-            }
-            match REGEX_MOVE_CURSOR_TO_LINE_COL.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndDoubleArgument {
-                        command: String::from("[H"),
-                        argument1: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                        argument2: matches.get(2).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            //[48;2;r;g;bm TrueColor Background
-            lazy_static! {
-                static ref REGEX_TRUECOLOR_BACKGROUND: Regex =
-                    Regex::new(r"^\[(?:[0-9]+;)?48;2;([0-9]+);([0-9]+);([0-9]+)m$").unwrap();
-            }
-            match REGEX_TRUECOLOR_BACKGROUND.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndTripleArgument {
-                        command: String::from("[m-bg-rgb"),
-                        argument1: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                        argument2: matches.get(2).map_or(0, |m| m.as_str().parse().unwrap()),
-                        argument3: matches.get(3).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            //[38;2;r;g;bm TrueColor Foreground
-            lazy_static! {
-                static ref REGEX_TRUECOLOR_FOREGROUND: Regex =
-                    Regex::new(r"^\[(?:[0-9]+;)?38;2;([0-9]+);([0-9]+);([0-9]+)m$").unwrap();
-            }
-            match REGEX_TRUECOLOR_FOREGROUND.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndTripleArgument {
-                        command: String::from("[m-fg-rgb"),
-                        argument1: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                        argument2: matches.get(2).map_or(0, |m| m.as_str().parse().unwrap()),
-                        argument3: matches.get(3).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // 38; -> foreground, 48 -> background
-            // 2; -> rgb, 5 -> 256 color
-            //[38;5;130m (256 Color Foreground)
-            lazy_static! {
-                static ref REGEX_256COLOR_BACKGROUND: Regex =
-                    Regex::new(r"^\[(?:[0-9]+;)?48;5;([0-9]+)m$").unwrap();
-            }
-            match REGEX_256COLOR_BACKGROUND.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndSingleArgument {
-                        command: String::from("[m-bg-256"),
-                        argument: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            lazy_static! {
-                static ref REGEX_256COLOR_FOREGROUND: Regex =
-                    Regex::new(r"^\[(?:[0-9]+;)?38;5;([0-9]+)m$").unwrap();
-            }
-            match REGEX_256COLOR_FOREGROUND.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndSingleArgument {
-                        command: String::from("[m-fg-256"),
-                        argument: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            //[01;32m 16 colors
-            lazy_static! {
-                static ref REGEX_16COLOR: Regex = Regex::new(r"^\[([0-9]+);([0-9]+)m$").unwrap();
-            }
-            match REGEX_16COLOR.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndDoubleArgument {
-                        command: String::from("[m"),
-                        argument1: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                        argument2: matches.get(2).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            //[1;6r Set top and bottom lines of a window (DECSTBM, set scroll region)
-            lazy_static! {
-                static ref REGEX_SET_SCROLL_REGION: Regex =
-                    Regex::new(r"^\[([0-9]+);([0-9]+)r$").unwrap();
-            }
-            match REGEX_SET_SCROLL_REGION.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndDoubleArgument {
-                        command: String::from("[r"),
-                        argument1: matches.get(1).map_or(0, |m| m.as_str().parse().unwrap()),
-                        argument2: matches.get(2).map_or(0, |m| m.as_str().parse().unwrap()),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            /* Application Programming Commands */
-            /* ESC _ */
-
-            lazy_static! {
-                static ref REGEX_WEB: Regex = Regex::new(r"^_WEB;([^\x1B]+)\a$").unwrap();
-            }
-            match REGEX_WEB.captures(&subcollector) {
-                Some(matches) => {
-                    let command = TerminalCommand::TerminalCommandSequenceAndSingleStringArgument {
-                        command: String::from("_WEB"),
-                        argument: std::str::from_utf8(
-                            &decode(matches.get(1).unwrap().as_str().to_string()).unwrap(),
-                        )
-                        .unwrap()
-                        .to_string(),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // Catchall ISC (Ignores a bunch of lowercase ISC sequences)
-            lazy_static! {
-                static ref REGEX_CATCH_ALL_ISC_Q: Regex =
-                    Regex::new(r"^\[([0-9]+)([a-z]{1})$").unwrap();
-            }
-            match REGEX_CATCH_ALL_ISC_Q.captures(&subcollector) {
-                Some(_) => {
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // Catchall ISC with ?
-            lazy_static! {
-                static ref REGEX_CATCH_ALL_ISC: Regex =
-                    Regex::new(r"^\[\?([0-9]+)([a-z]{1})$").unwrap();
-            }
-            match REGEX_CATCH_ALL_ISC.captures(&subcollector) {
-                Some(_) => {
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // Catchall ISC 2
-            lazy_static! {
-                static ref REGEX_CATCH_ALL_ISC2: Regex = Regex::new(r"^\[([0-9]+)\x1B$").unwrap();
-            }
-            match REGEX_CATCH_ALL_ISC2.captures(&subcollector) {
-                Some(_) => {
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // Catchall DCS 2
-            lazy_static! {
-                static ref REGEX_CATCH_ALL_DCS: Regex = Regex::new(r"^P([^\x1B]+)\x1B\\$").unwrap();
-            }
-            match REGEX_CATCH_ALL_DCS.captures(&subcollector) {
-                Some(_) => {
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // Catchall ??
-            lazy_static! {
-                static ref REGEX_CATCH_MYSTERY: Regex =
-                    Regex::new(r"^\[([0-9]+);([0-9]+)t$").unwrap();
-            }
-            match REGEX_CATCH_MYSTERY.captures(&subcollector) {
-                Some(_) => {
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            /* OSC - OPERATING SYSTEM COMMANDS */
-            /* ESC ] */
-
-            // Titles
-            // matches[1] == 0 -> Set icon name and window title to string
-            // matches[1] == 1 -> Set icon name to string
-            // matches[1] == 2 -> Set window title to string
-            // matches[1] == 7 -> ??? No clue.
-            lazy_static! {
-                static ref REGEX_SET_TITLE_AND_ICON: Regex =
-                    Regex::new(r"^]([0127]);([^\a]+)\a$").unwrap();
-            }
-            match REGEX_SET_TITLE_AND_ICON.captures(&subcollector) {
-                Some(matches) => {
-                    let kind = match matches.get(1).unwrap().as_str() {
-                        "0" => "set-icon-name-and-window-title",
-                        "1" => "set-icon-name",
-                        "2" => "set-window-title",
-                        _ => "set-mystery-title", // (7)
-                    };
-                    let command = TerminalCommand::TerminalCommandSequenceAndSingleStringArgument {
-                        command: kind.to_string(),
-                        argument: matches.get(2).unwrap().as_str().to_string(),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            // Same as REGEX_SET_TITLE_AND_ICON but ST (ESC \) terminated instead of BEL.
-            // oh-my-zsh emits this form for the cwd OSC sequence.
-            lazy_static! {
-                static ref REGEX_SET_TITLE_AND_ICON_ST: Regex =
-                    Regex::new(r"^\]([0127]);([^\x1b]+)\x1b\\$").unwrap();
-            }
-            match REGEX_SET_TITLE_AND_ICON_ST.captures(&subcollector) {
-                Some(matches) => {
-                    let kind = match matches.get(1).unwrap().as_str() {
-                        "0" => "set-icon-name-and-window-title",
-                        "1" => "set-icon-name",
-                        "2" => "set-window-title",
-                        _ => "set-mystery-title",
-                    };
-                    let command = TerminalCommand::TerminalCommandSequenceAndSingleStringArgument {
-                        command: kind.to_string(),
-                        argument: matches.get(2).unwrap().as_str().to_string(),
-                    };
-                    collected.push(command.clone());
-                    output(command);
-                    subcollector = "".to_string();
-                    mid_sequence = false;
-                    continue;
-                }
-                None => (),
-            }
-
-            /* ASCII CONTROL CHARACTERS */
-            /* Handle \r inside escape sequences */
-            if subcollector.ends_with("\r") {
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\r"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = subcollector.trim_end_matches("\r").to_string();
-                continue;
-            }
-
-            // Handle \n inside escape sequences
-            if subcollector.ends_with("\n") {
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\n"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = subcollector.trim_end_matches("\n").to_string();
-                continue;
-            }
-
-            // Handle \t inside escape sequences
-            if subcollector.ends_with("\u{9}") {
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\u{9}"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = subcollector.trim_end_matches("\u{9}").to_string();
-                continue;
-            }
-
-            // Handle \b inside escape sequences
-            if subcollector.ends_with("\u{8}") {
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\u{8}"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = subcollector.trim_end_matches("\u{8}").to_string();
-                continue;
-            }
-
-            // if data.chars().nth(index + 1) == Option::Some('\u{1b}') {
-            //   if !QUERY_SEQUENCES
-            //     .iter()
-            //     .any(|v| v == &format!("{}{}", subcollector, "\u{1b}\\".to_owned()))
-            //   {
-            //     // The title command could potentially trigger this...
-            //     println!("POTENTIALLY NOT MATCHED: {:?}", subcollector);
-            //   }
-            // }
-        } else {
-            /* NESTED ASCII CONTROL CHARACTERS */
-            /* These aren't prefixed with \u{1b} */
-            // Handle \r
-            if subcollector.ends_with("\r") {
-                let sub = subcollector.trim_end_matches("\r");
-                if sub.len() != 0 {
-                    let command = TerminalCommand::Text(sub.to_string());
-                    collected.push(command.clone());
-                    output(command)
-                }
-
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\r"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
-
-            // Handle \n
-            if subcollector == "\n" {
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\n"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
-
-            // Handle \a
-            if subcollector == "\u{7}" {
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\u{7}"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
-
-            // Handle \t
-            if subcollector.ends_with("\u{9}") {
-                let sub = subcollector.trim_end_matches("\u{9}");
-                if sub.len() != 0 {
-                    let command = TerminalCommand::Text(sub.to_string());
-                    collected.push(command.clone());
-                    output(command)
-                }
-
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\u{9}"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
-
-            // Handle \b
-            if subcollector.ends_with("\u{8}") {
-                let sub = subcollector.trim_end_matches("\u{8}");
-                if sub.len() != 0 {
-                    let command = TerminalCommand::Text(sub.to_string());
-                    collected.push(command.clone());
-                    output(command)
-                }
-
-                let command = TerminalCommand::TerminalCommandSequence {
-                    command: String::from("\u{8}"),
-                };
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
-                mid_sequence = false;
-                continue;
-            }
+    /// Feed a chunk of output. Sequences may be split across chunks at any
+    /// point; text is flushed at the end of every chunk.
+    pub fn advance(&mut self, data: &str, output: &mut dyn FnMut(TerminalCommand)) {
+        for c in data.chars() {
+            self.step(c, output);
         }
+        self.flush_text(output);
+    }
 
-        if index == length && subcollector.len() != 0 {
-            // Handle incomplete sequence
-            if mid_sequence {
-                let command = TerminalCommand::TerminalCommandPartial(
-                    "\u{1b}".to_owned() + &subcollector.clone(),
-                );
-                collected.push(command.clone());
-                output(command.clone());
-                subcollector = "".to_string();
-            } else {
-                // Handle Raw Output
-                let command = TerminalCommand::Text(subcollector.clone());
-                collected.push(command.clone());
-                output(command);
-                subcollector = "".to_string();
+    /// The raw text of the sequence currently being collected, if any.
+    pub fn pending(&self) -> Option<String> {
+        match self.state {
+            State::Ground => None,
+            State::Escape | State::EscapeIntermediate => {
+                Some(format!("\u{1b}{}", self.intermediates))
+            }
+            State::Csi | State::CsiIgnore => {
+                Some(format!("\u{1b}[{}{}", self.params, self.intermediates))
+            }
+            State::Str(kind) => Some(format!(
+                "\u{1b}{}{}{}",
+                kind.introducer(),
+                self.string,
+                if self.string_escape_pending { "\u{1b}" } else { "" }
+            )),
+        }
+    }
+
+    fn step(&mut self, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        match self.state {
+            State::Ground => self.ground(c, output),
+            State::Escape => self.escape(c, output),
+            State::EscapeIntermediate => self.escape_intermediate(c, output),
+            State::Csi | State::CsiIgnore => self.csi(c, output),
+            State::Str(kind) => self.string(kind, c, output),
+        }
+    }
+
+    fn flush_text(&mut self, output: &mut dyn FnMut(TerminalCommand)) {
+        if !self.text.is_empty() {
+            output(TerminalCommand::Text(std::mem::take(&mut self.text)));
+        }
+    }
+
+    fn enter_escape(&mut self, output: &mut dyn FnMut(TerminalCommand)) {
+        self.flush_text(output);
+        self.params.clear();
+        self.intermediates.clear();
+        self.state = State::Escape;
+    }
+
+    fn enter_string(&mut self, kind: StringKind) {
+        self.string.clear();
+        self.string_overflowed = false;
+        self.string_escape_pending = false;
+        self.state = State::Str(kind);
+    }
+
+    fn print(&mut self, c: char) {
+        let translated = match self.charsets[self.active_charset] {
+            Charset::Ascii => c,
+            Charset::DecSpecialGraphics => dec_special_graphics(c),
+        };
+        self.text.push(translated);
+        self.last_printed = Some(translated);
+    }
+
+    /// C0 control characters. These are executed wherever they appear, even
+    /// in the middle of a CSI sequence, without disturbing that sequence.
+    fn execute(&mut self, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        let command = match c {
+            // LF, VT and FF are all line feeds
+            '\n' | '\u{b}' | '\u{c}' => "\n",
+            '\r' => "\r",
+            '\t' => "\u{9}",
+            '\u{8}' => "\u{8}",
+            '\u{7}' => "\u{7}",
+            // SO / SI: switch between the G1 and G0 character sets
+            '\u{e}' => {
+                self.active_charset = 1;
+                return;
+            }
+            '\u{f}' => {
+                self.active_charset = 0;
+                return;
+            }
+            _ => return,
+        };
+        self.flush_text(output);
+        output(sequence(command));
+    }
+
+    fn ground(&mut self, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        match c {
+            '\u{1b}' => self.enter_escape(output),
+            '\u{0}'..='\u{1f}' => self.execute(c, output),
+            // DEL and the C1 control range are not printable
+            '\u{7f}'..='\u{9f}' => (),
+            _ => self.print(c),
+        }
+    }
+
+    fn escape(&mut self, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        match c {
+            '\u{1b}' => self.enter_escape(output),
+            '\u{18}' | '\u{1a}' => self.state = State::Ground,
+            '\u{0}'..='\u{1f}' => self.execute(c, output),
+            '[' => self.state = State::Csi,
+            ']' => self.enter_string(StringKind::Osc),
+            'P' => self.enter_string(StringKind::Dcs),
+            '_' => self.enter_string(StringKind::Apc),
+            '^' => self.enter_string(StringKind::Pm),
+            'X' => self.enter_string(StringKind::Sos),
+            ' '..='/' => {
+                self.intermediates.push(c);
+                self.state = State::EscapeIntermediate;
+            }
+            '0'..='~' => {
+                self.state = State::Ground;
+                self.escape_dispatch(c, output);
+            }
+            '\u{7f}' => (),
+            _ => {
+                self.state = State::Ground;
+                self.ground(c, output);
             }
         }
     }
 
-    return collected;
+    fn escape_intermediate(&mut self, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        match c {
+            '\u{1b}' => self.enter_escape(output),
+            '\u{18}' | '\u{1a}' => self.state = State::Ground,
+            '\u{0}'..='\u{1f}' => self.execute(c, output),
+            ' '..='/' => {
+                if self.intermediates.len() < MAX_CSI_LENGTH {
+                    self.intermediates.push(c);
+                }
+            }
+            '0'..='~' => {
+                self.state = State::Ground;
+                self.escape_dispatch(c, output);
+            }
+            '\u{7f}' => (),
+            _ => {
+                self.state = State::Ground;
+                self.ground(c, output);
+            }
+        }
+    }
+
+    fn escape_dispatch(&mut self, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        match (self.intermediates.as_str(), c) {
+            // DECSC / DECRC: save and restore the cursor
+            ("", '7') => output(sequence("7")),
+            ("", '8') => output(sequence("8")),
+            // IND, NEL, RI
+            ("", 'D') => output(sequence("D")),
+            ("", 'E') => output(sequence("E")),
+            ("", 'M') => output(sequence("M")),
+            // HTS: set a tab stop at the cursor column
+            ("", 'H') => output(sequence("H")),
+            // RIS: full reset
+            ("", 'c') => {
+                self.charsets = [Charset::Ascii; 4];
+                self.active_charset = 0;
+                output(sequence("c"))
+            }
+            // DECID: identify, answered like primary device attributes
+            ("", 'Z') => output(query("[0c")),
+            // LS2 / LS3: invoke the G2 / G3 character set
+            ("", 'n') => self.active_charset = 2,
+            ("", 'o') => self.active_charset = 3,
+            // DECALN: fill the screen with E
+            ("#", '8') => output(sequence("#8")),
+            // Designate the G0-G3 character sets
+            ("(", _) => self.charsets[0] = charset(c),
+            (")", _) => self.charsets[1] = charset(c),
+            ("*", _) => self.charsets[2] = charset(c),
+            ("+", _) => self.charsets[3] = charset(c),
+            // Everything else (keypad modes, single shifts, ST on its own,
+            // double-size lines, 7/8-bit control selection...) has no effect.
+            _ => (),
+        }
+    }
+
+    fn csi(&mut self, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        match c {
+            '\u{1b}' => self.enter_escape(output),
+            '\u{18}' | '\u{1a}' => self.state = State::Ground,
+            '\u{0}'..='\u{1f}' => self.execute(c, output),
+            '0'..='?' => {
+                if !self.intermediates.is_empty() || self.params.len() >= MAX_CSI_LENGTH {
+                    self.state = State::CsiIgnore;
+                } else {
+                    self.params.push(c);
+                }
+            }
+            ' '..='/' => {
+                if self.intermediates.len() >= MAX_CSI_LENGTH {
+                    self.state = State::CsiIgnore;
+                } else {
+                    self.intermediates.push(c);
+                }
+            }
+            '@'..='~' => {
+                let ignore = self.state == State::CsiIgnore;
+                self.state = State::Ground;
+                if !ignore {
+                    self.csi_dispatch(c, output);
+                }
+            }
+            '\u{7f}' => (),
+            _ => {
+                self.state = State::Ground;
+                self.ground(c, output);
+            }
+        }
+    }
+
+    fn csi_dispatch(&mut self, final_char: char, output: &mut dyn FnMut(TerminalCommand)) {
+        let (prefix, params) = parse_params(&self.params);
+        // First value of parameter `i`, if it was given.
+        let p = |i: usize| -> Option<u32> { params.get(i).and_then(|param| param[0]) };
+        let intermediates = self.intermediates.as_str();
+
+        match (prefix, intermediates, final_char) {
+            // Cursor movement, insert/delete/erase, scrolling, tabulation.
+            // `[A` without a count, `[5A` with one.
+            (None, "", 'A'..='G')
+            | (None, "", 'L')
+            | (None, "", 'M')
+            | (None, "", 'P')
+            | (None, "", 'S')
+            | (None, "", 'X')
+            | (None, "", '@')
+            | (None, "", 'd')
+            | (None, "", 'I')
+            | (None, "", 'Z') => output(counted(final_char, p(0))),
+            // SD: with more than one parameter this is mouse highlight tracking
+            (None, "", 'T') if params.len() <= 1 => output(counted('T', p(0))),
+            // HPA is the same as CHA
+            (None, "", '`') => output(counted('G', p(0))),
+            // CUP / HVP
+            (None, "", 'H') | (None, "", 'f') => {
+                if params.is_empty() {
+                    output(sequence("[H"))
+                } else {
+                    output(double("[H", at_least_one(p(0)), at_least_one(p(1))))
+                }
+            }
+            // ED / EL (and their selective DECSED / DECSEL variants)
+            (None, "", 'J') | (Some('?'), "", 'J') => match p(0) {
+                None => output(sequence("[J")),
+                Some(n) if n <= 3 => output(sequence(&format!("[{}J", n))),
+                Some(_) => (),
+            },
+            (None, "", 'K') | (Some('?'), "", 'K') => match p(0) {
+                None => output(sequence("[K")),
+                Some(n) if n <= 2 => output(sequence(&format!("[{}K", n))),
+                Some(_) => (),
+            },
+            // SGR
+            (None, "", 'm') => select_graphic_rendition(&params, output),
+            // DECSTBM: top and bottom margins. 0 means "use the default".
+            (None, "", 'r') => {
+                if params.is_empty() {
+                    output(sequence("[r"))
+                } else {
+                    output(double("[r", at_least_one(p(0)), p(1).unwrap_or(0)))
+                }
+            }
+            // SM / RM
+            (None, "", 'h') | (None, "", 'l') => {
+                for param in &params {
+                    match param[0] {
+                        // IRM: insert mode, LNM: automatic newline
+                        Some(mode @ 4) | Some(mode @ 20) => {
+                            output(sequence(&format!("[{}{}", mode, final_char)))
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            // DECSET / DECRST
+            (Some('?'), "", 'h') | (Some('?'), "", 'l') => {
+                for param in &params {
+                    if let Some(mode) = param[0] {
+                        if PRIVATE_MODES.contains(&mode) {
+                            output(sequence(&format!("[?{}{}", mode, final_char)))
+                        }
+                    }
+                }
+            }
+            // DSR: status and cursor position reports
+            (None, "", 'n') => match p(0) {
+                Some(5) => output(query("[5n")),
+                Some(6) => output(query("[6n")),
+                _ => (),
+            },
+            (Some('?'), "", 'n') => match p(0) {
+                Some(6) => output(query("[?6n")),
+                Some(996) => output(query("[?996n")),
+                _ => (),
+            },
+            // DA1 / DA2 / DA3
+            (None, "", 'c') if p(0).unwrap_or(0) == 0 => output(query("[0c")),
+            (Some('>'), "", 'c') if p(0).unwrap_or(0) == 0 => output(query("[>c")),
+            (Some('='), "", 'c') if p(0).unwrap_or(0) == 0 => output(query("[=c")),
+            // XTVERSION
+            (Some('>'), "", 'q') if p(0).unwrap_or(0) == 0 => output(query("[>q")),
+            // DECRQM: report a mode
+            (Some('?'), "$", 'p') => output(query(&format!("[?{}$p", p(0).unwrap_or(0)))),
+            (None, "$", 'p') => output(query(&format!("[{}$p", p(0).unwrap_or(0)))),
+            // Window manipulation: only the size reports are supported
+            (None, "", 't') => match p(0) {
+                Some(n @ 14) | Some(n @ 16) | Some(n @ 18) | Some(n @ 19) => {
+                    output(query(&format!("[{}t", n)))
+                }
+                _ => (),
+            },
+            // Save / restore cursor (ANSI.SYS)
+            (None, "", 's') if params.is_empty() => output(sequence("[s")),
+            (None, "", 'u') if params.is_empty() => output(sequence("[u")),
+            // Kitty keyboard protocol: query, push, pop, set
+            (Some('?'), "", 'u') => output(query("[?u")),
+            (Some('>'), "", 'u') => output(single("[>u", p(0).unwrap_or(0))),
+            (Some('<'), "", 'u') => output(single("[<u", at_least_one(p(0)))),
+            (Some('='), "", 'u') => {
+                output(double("[=u", p(0).unwrap_or(0), at_least_one(p(1))))
+            }
+            // TBC: clear tab stops
+            (None, "", 'g') => match p(0).unwrap_or(0) {
+                0 => output(single("[g", 0)),
+                3 => output(single("[g", 3)),
+                _ => (),
+            },
+            // REP: repeat the preceding graphic character
+            (None, "", 'b') => {
+                if let Some(c) = self.last_printed {
+                    let count = at_least_one(p(0)).min(MAX_REPEAT) as usize;
+                    output(TerminalCommand::Text(
+                        std::iter::repeat(c).take(count).collect(),
+                    ))
+                }
+            }
+            // DECSCUSR: cursor style
+            (None, " ", 'q') => output(single("[ q", p(0).unwrap_or(0))),
+            // DECSTR: soft reset
+            (None, "!", 'p') => {
+                self.charsets = [Charset::Ascii; 4];
+                self.active_charset = 0;
+                output(sequence("[!p"))
+            }
+            // Anything else is a sequence we do not act on.
+            _ => (),
+        }
+    }
+
+    fn string(&mut self, kind: StringKind, c: char, output: &mut dyn FnMut(TerminalCommand)) {
+        if self.string_escape_pending {
+            self.string_escape_pending = false;
+            if c == '\\' {
+                // ESC \ is the string terminator
+                return self.string_dispatch(kind, "\u{1b}\\", output);
+            }
+            // Any other escape is kept as part of the payload. Shells that
+            // echo the command line into the window title produce these.
+            self.string_push('\u{1b}');
+        }
+
+        match c {
+            '\u{1b}' => self.string_escape_pending = true,
+            '\u{7}' if kind == StringKind::Osc || kind == StringKind::Apc => {
+                self.string_dispatch(kind, "\u{7}", output)
+            }
+            '\u{9c}' => self.string_dispatch(kind, "\u{1b}\\", output),
+            '\u{18}' | '\u{1a}' => self.state = State::Ground,
+            _ => self.string_push(c),
+        }
+    }
+
+    fn string_push(&mut self, c: char) {
+        if self.string.len() < MAX_STRING_LENGTH {
+            self.string.push(c);
+        } else {
+            self.string_overflowed = true;
+        }
+    }
+
+    fn string_dispatch(
+        &mut self,
+        kind: StringKind,
+        terminator: &str,
+        output: &mut dyn FnMut(TerminalCommand),
+    ) {
+        self.state = State::Ground;
+        let payload = std::mem::take(&mut self.string);
+        if self.string_overflowed {
+            return;
+        }
+
+        match kind {
+            StringKind::Osc => operating_system_command(&payload, terminator, output),
+            StringKind::Dcs => {
+                // DECRQSS (request selection or setting) and XTGETTCAP
+                if payload.starts_with("$q") || payload.starts_with("+q") {
+                    output(query(&format!("P{}", payload)))
+                }
+            }
+            StringKind::Apc => {
+                if let Some(encoded) = payload.strip_prefix("WEB;") {
+                    if let Some(url) = decode_base64(encoded).and_then(|b| String::from_utf8(b).ok())
+                    {
+                        output(string_argument("_WEB", &url))
+                    }
+                }
+            }
+            StringKind::Pm | StringKind::Sos => (),
+        }
+    }
+}
+
+/// Parse a complete chunk of output in one go.
+///
+/// If the input ends in the middle of a sequence the remainder is reported as
+/// a `TerminalCommandPartial` so the caller can prepend it to the next chunk.
+/// Long-running consumers should hold on to a `Parser` (or a `Stream`) instead.
+pub fn parse(data: &str, mut output: impl FnMut(TerminalCommand) -> ()) -> Vec<TerminalCommand> {
+    let mut collected: Vec<TerminalCommand> = vec![];
+    let mut parser = Parser::new();
+
+    {
+        let mut collect = |command: TerminalCommand| {
+            collected.push(command.clone());
+            output(command);
+        };
+        parser.advance(data, &mut collect);
+
+        if let Some(pending) = parser.pending() {
+            collect(TerminalCommand::TerminalCommandPartial(pending));
+        }
+    }
+
+    collected
+}
+
+/// Decodes raw PTY bytes and parses them, keeping all state across reads.
+///
+/// Invalid UTF-8 becomes U+FFFD instead of stalling the stream, and a
+/// multi-byte character split across two reads is stitched back together.
+pub struct Stream {
+    parser: Parser,
+    incomplete: Vec<u8>,
+}
+
+impl Default for Stream {
+    fn default() -> Self {
+        Stream::new()
+    }
+}
+
+impl Stream {
+    pub fn new() -> Stream {
+        Stream {
+            parser: Parser::new(),
+            incomplete: vec![],
+        }
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<TerminalCommand> {
+        let mut commands: Vec<TerminalCommand> = vec![];
+        let text = self.decode(bytes);
+        self.parser
+            .advance(&text, &mut |command| commands.push(command));
+        commands
+    }
+
+    fn decode(&mut self, bytes: &[u8]) -> String {
+        let mut buffer = std::mem::take(&mut self.incomplete);
+        buffer.extend_from_slice(bytes);
+
+        let mut text = String::with_capacity(buffer.len());
+        let mut rest: &[u8] = &buffer;
+        loop {
+            match std::str::from_utf8(rest) {
+                Ok(valid) => {
+                    text.push_str(valid);
+                    break;
+                }
+                Err(error) => {
+                    let (valid, after) = rest.split_at(error.valid_up_to());
+                    // valid_up_to guarantees this is valid UTF-8
+                    text.push_str(std::str::from_utf8(valid).unwrap_or(""));
+                    match error.error_len() {
+                        Some(length) => {
+                            text.push('\u{fffd}');
+                            rest = &after[length..];
+                        }
+                        None => {
+                            // A character cut off by the end of this read
+                            self.incomplete = after.to_vec();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        text
+    }
+}
+
+fn sequence(command: &str) -> TerminalCommand {
+    TerminalCommand::TerminalCommandSequence {
+        command: command.to_string(),
+    }
+}
+
+fn query(command: &str) -> TerminalCommand {
+    TerminalCommand::TerminalCommandQuerySequence {
+        command: command.to_string(),
+    }
+}
+
+fn single(command: &str, argument: u32) -> TerminalCommand {
+    TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+        command: command.to_string(),
+        argument,
+    }
+}
+
+fn double(command: &str, argument1: u32, argument2: u32) -> TerminalCommand {
+    TerminalCommand::TerminalCommandSequenceAndDoubleArgument {
+        command: command.to_string(),
+        argument1,
+        argument2,
+    }
+}
+
+fn triple(command: &str, argument1: u32, argument2: u32, argument3: u32) -> TerminalCommand {
+    TerminalCommand::TerminalCommandSequenceAndTripleArgument {
+        command: command.to_string(),
+        argument1,
+        argument2,
+        argument3,
+    }
+}
+
+fn string_argument(command: &str, argument: &str) -> TerminalCommand {
+    TerminalCommand::TerminalCommandSequenceAndSingleStringArgument {
+        command: command.to_string(),
+        argument: argument.to_string(),
+    }
+}
+
+/// `[A` when no count was given, `[A` with the count otherwise.
+fn counted(final_char: char, count: Option<u32>) -> TerminalCommand {
+    let command = format!("[{}", final_char);
+    match count {
+        None => sequence(&command),
+        Some(n) => single(&command, n),
+    }
+}
+
+fn at_least_one(value: Option<u32>) -> u32 {
+    value.unwrap_or(1).max(1)
+}
+
+/// Split CSI parameter bytes into an optional private marker (`?`, `>`, `<`,
+/// `=`) and the list of parameters.
+fn parse_params(raw: &str) -> (Option<char>, Vec<Param>) {
+    let (prefix, body) = match raw.chars().next() {
+        Some(c @ '<'..='?') => (Some(c), &raw[1..]),
+        _ => (None, raw),
+    };
+
+    if body.is_empty() {
+        return (prefix, vec![]);
+    }
+
+    let params = body
+        .split(';')
+        .map(|param| param.split(':').map(parse_number).collect())
+        .collect();
+
+    (prefix, params)
+}
+
+fn parse_number(digits: &str) -> Option<u32> {
+    if digits.is_empty() {
+        return None;
+    }
+
+    let mut value: u32 = 0;
+    for c in digits.chars() {
+        // A stray private marker in the middle of the parameters
+        let digit = c.to_digit(10)?;
+        value = value.saturating_mul(10).saturating_add(digit);
+    }
+    Some(value)
+}
+
+fn select_graphic_rendition(params: &[Param], output: &mut dyn FnMut(TerminalCommand)) {
+    if params.is_empty() {
+        return output(sequence("[m"));
+    }
+
+    let mut commands: Vec<TerminalCommand> = vec![];
+    let mut all_plain = true;
+    let mut i = 0;
+
+    while i < params.len() {
+        let param = &params[i];
+        let code = param[0].unwrap_or(0);
+
+        match code {
+            // Extended colors: 38 foreground, 48 background, 58 underline.
+            // Without a color specification there is nothing to select.
+            38 | 48 | 58 if param.len() > 1 || i + 1 < params.len() => {
+                all_plain = false;
+                let color = if param.len() > 1 {
+                    // 38:5:n, 38:2:r:g:b and 38:2:colorspace:r:g:b
+                    let sub = |j: usize| param.get(j).copied().flatten().unwrap_or(0);
+                    match param[1] {
+                        Some(5) => Some(ExtendedColor::Indexed(sub(2))),
+                        Some(2) if param.len() >= 6 => {
+                            Some(ExtendedColor::Rgb(sub(3), sub(4), sub(5)))
+                        }
+                        Some(2) => Some(ExtendedColor::Rgb(sub(2), sub(3), sub(4))),
+                        _ => None,
+                    }
+                } else {
+                    // 38;5;n and 38;2;r;g;b
+                    let value = |j: usize| params.get(i + j).and_then(|p| p[0]).unwrap_or(0);
+                    match params.get(i + 1).and_then(|p| p[0]) {
+                        Some(5) => {
+                            let color = ExtendedColor::Indexed(value(2));
+                            i += 2;
+                            Some(color)
+                        }
+                        Some(2) => {
+                            let color = ExtendedColor::Rgb(value(2), value(3), value(4));
+                            i += 4;
+                            Some(color)
+                        }
+                        _ => {
+                            // Unknown color space: the rest cannot be interpreted
+                            i = params.len();
+                            None
+                        }
+                    }
+                };
+
+                let target = match code {
+                    38 => Some("fg"),
+                    48 => Some("bg"),
+                    // The underline color is accepted but not rendered
+                    _ => None,
+                };
+
+                match (target, color) {
+                    (Some(target), Some(ExtendedColor::Indexed(index))) => commands.push(single(
+                        &format!("[m-{}-256", target),
+                        index.min(255),
+                    )),
+                    (Some(target), Some(ExtendedColor::Rgb(r, g, b))) => commands.push(triple(
+                        &format!("[m-{}-rgb", target),
+                        r.min(255),
+                        g.min(255),
+                        b.min(255),
+                    )),
+                    _ => (),
+                }
+            }
+            // 4:0 turns the underline off, 4:1-4:5 pick an underline style
+            4 if param.len() > 1 => {
+                all_plain = false;
+                commands.push(single(
+                    "[m",
+                    if param[1] == Some(0) { 24 } else { 4 },
+                ))
+            }
+            _ => commands.push(single("[m", code)),
+        }
+
+        i += 1;
+    }
+
+    // Two plain attributes are sent as one command: `[1;32m` -> ("[m", 1, 32)
+    if all_plain && params.len() == 2 {
+        let code = |i: usize| params[i][0].unwrap_or(0);
+        return output(double("[m", code(0), code(1)));
+    }
+
+    for command in commands {
+        output(command);
+    }
+}
+
+enum ExtendedColor {
+    Indexed(u32),
+    Rgb(u32, u32, u32),
+}
+
+fn operating_system_command(
+    payload: &str,
+    terminator: &str,
+    output: &mut dyn FnMut(TerminalCommand),
+) {
+    let (code, rest) = match payload.split_once(';') {
+        Some((code, rest)) => (code, rest),
+        None => (payload, ""),
+    };
+
+    match code {
+        "0" => output(string_argument("set-icon-name-and-window-title", rest)),
+        "1" => output(string_argument("set-icon-name", rest)),
+        "2" => output(string_argument("set-window-title", rest)),
+        // file://host/path of the shell's working directory
+        "7" => output(string_argument("set-working-directory", rest)),
+        // Hyperlink: `8;params;uri`. An empty uri closes the link.
+        "8" => {
+            let uri = rest.split_once(';').map(|(_, uri)| uri).unwrap_or("");
+            output(string_argument("hyperlink", uri))
+        }
+        // Desktop notifications. `9;4;...` is a progress report, not a message.
+        "9" => {
+            if !rest.starts_with("4;") && !rest.is_empty() {
+                output(string_argument("notify", rest))
+            }
+        }
+        "777" => {
+            if let Some(message) = rest.strip_prefix("notify;") {
+                output(string_argument("notify", &message.replacen(';', ": ", 1)))
+            }
+        }
+        // Color queries. Setting colors is not supported.
+        "4" | "10" | "11" | "12" => {
+            if rest == "?" || rest.ends_with(";?") {
+                output(query(&format!("]{}{}", payload, terminator)))
+            }
+        }
+        // Clipboard: `52;selection;base64`. Reading the clipboard (`?`) is
+        // deliberately not answered.
+        "52" => {
+            if let Some((_, data)) = rest.split_once(';') {
+                if data != "?" {
+                    if let Some(text) = decode_base64(data).and_then(|b| String::from_utf8(b).ok())
+                    {
+                        output(string_argument("clipboard-write", &text))
+                    }
+                }
+            }
+        }
+        _ => (),
+    }
+}
+
+fn charset(designator: char) -> Charset {
+    match designator {
+        '0' | '2' => Charset::DecSpecialGraphics,
+        _ => Charset::Ascii,
+    }
+}
+
+/// The DEC Special Graphics character set (line drawing).
+fn dec_special_graphics(c: char) -> char {
+    match c {
+        '_' => ' ',
+        '`' => '◆',
+        'a' => '▒',
+        'b' => '␉',
+        'c' => '␌',
+        'd' => '␍',
+        'e' => '␊',
+        'f' => '°',
+        'g' => '±',
+        'h' => '␤',
+        'i' => '␋',
+        'j' => '┘',
+        'k' => '┐',
+        'l' => '┌',
+        'm' => '└',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'q' => '─',
+        'r' => '⎼',
+        's' => '⎽',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'x' => '│',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        '~' => '·',
+        _ => c,
+    }
+}
+
+fn decode_base64(encoded: &str) -> Option<Vec<u8>> {
+    let mut decoded: Vec<u8> = Vec::with_capacity(encoded.len() * 3 / 4);
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+
+    for c in encoded.chars() {
+        let value = match c {
+            'A'..='Z' => c as u32 - 'A' as u32,
+            'a'..='z' => c as u32 - 'a' as u32 + 26,
+            '0'..='9' => c as u32 - '0' as u32 + 52,
+            '+' | '-' => 62,
+            '/' | '_' => 63,
+            '=' | '\n' | '\r' | ' ' => continue,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            decoded.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+
+    Some(decoded)
 }

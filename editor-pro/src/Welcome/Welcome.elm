@@ -25,7 +25,6 @@ view { recents, onOpenFolder, onOpenRecent } =
             [ heading
             , primaryButton onOpenFolder
             , recentsList recents onOpenRecent
-            , footerHint
             ]
         ]
 
@@ -104,19 +103,6 @@ recentRow onOpenRecent path =
         ]
         [ span [ style "font-weight" "500" ] [ text label ]
         , span [ style "color" "#7a8088", style "font-size" "12px" ] [ text parent ]
-        ]
-
-
-footerHint : Html msg
-footerHint =
-    div
-        [ class "text-xs"
-        , style "color" "#7a8088"
-        , style "margin-top" "8px"
-        ]
-        [ text "Or press "
-        , span [ style "font-family" "monospace", style "color" "#aaaaaa" ] [ text "⌘⇧O" ]
-        , text " to fuzzy-find a project."
         ]
 
 

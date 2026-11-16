@@ -4,6 +4,7 @@ import Editor exposing (initialPorts)
 import Editor.Msg
 import Json.Encode
 import Ports
+import Terminal
 import Terminal.Types
 
 
@@ -37,18 +38,31 @@ editorPorts =
     }
 
 
-terminalPorts : String -> Terminal.Types.Ports
-terminalPorts cwd =
-    { requestPasteTerminal = Ports.requestPasteTerminal
-    , requestCopyTerminal = Ports.requestCopyTerminal
-    , requestQuit = \_ -> Cmd.none
-    , requestRunTerminal =
-        \code ->
-            Ports.requestRunTerminal <|
-                Json.Encode.object
-                    [ ( "cwd", Json.Encode.string cwd )
-                    , ( "contents", Json.Encode.string code )
-                    ]
+{-| Everything a terminal writes back (keys, pastes, replies to queries)
+carries the ids of its own PTY, so a terminal in a background tab or
+workspace answers its own shell rather than the active one.
+-}
+terminalPorts : String -> String -> String -> Terminal.Types.Ports
+terminalPorts workspaceId terminalId cwd =
+    let
+        ports =
+            Terminal.initialPorts
+    in
+    { ports
+        | requestPasteTerminal = Ports.requestPasteTerminal
+        , requestCopyTerminal = Ports.requestCopyTerminal
+        , requestWriteClipboard = Ports.requestCopy
+        , requestBell = Ports.requestBellTerminal
+        , requestNotify = Ports.requestNotifyTerminal
+        , requestRunTerminal =
+            \code ->
+                Ports.requestRunTerminal <|
+                    Json.Encode.object
+                        [ ( "workspaceId", Json.Encode.string workspaceId )
+                        , ( "terminalId", Json.Encode.string terminalId )
+                        , ( "cwd", Json.Encode.string cwd )
+                        , ( "contents", Json.Encode.string code )
+                        ]
     }
 
 

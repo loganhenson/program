@@ -612,6 +612,11 @@ fn vt_test_4_pretest() {
         result,
         [
             TerminalCommand::Text(String::from("A ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
@@ -631,46 +636,91 @@ fn vt_test_4() {
     assert_eq!(
         result,
         [
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("B ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("C ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("D ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("E ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("F ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("G ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("H ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
             },
             TerminalCommand::Text(String::from("I ")),
+            // VT is a line feed, and control characters inside a CSI
+            // sequence are executed without interrupting it
+            TerminalCommand::TerminalCommandSequence {
+                command: String::from("\n")
+            },
             TerminalCommand::TerminalCommandSequenceAndSingleArgument {
                 command: String::from("[A"),
                 argument: 1
@@ -734,7 +784,8 @@ fn it_can_handle_st_terminator() {
             TerminalCommand::TerminalCommandQuerySequence {
                 command: String::from("]11;?\u{1b}\\"),
             },
-            TerminalCommand::TerminalCommandPartial(String::from("\u{1b}nd")),
+            // ESC n (LS2) is a complete sequence, so only "d" is left as text
+            TerminalCommand::Text(String::from("d")),
         ]
     );
 }
@@ -816,9 +867,17 @@ fn it_matches_1m_escape() {
 
 #[test]
 fn it_properly_ignores_incomplete_sequence() {
+    // The second ESC cancels the unfinished CSI and may itself be the start
+    // of a sequence that continues in the next chunk.
     let result = parse("asdf\u{1b}[1\u{1b}", |_output| {});
 
-    assert_eq!(result, [TerminalCommand::Text(String::from("asdf"))]);
+    assert_eq!(
+        result,
+        [
+            TerminalCommand::Text(String::from("asdf")),
+            TerminalCommand::TerminalCommandPartial(String::from("\u{1b}"))
+        ]
+    );
 }
 
 #[test]
@@ -906,10 +965,17 @@ fn it_parses_text_formatting_with_bright_bold_modifier() {
 
     assert_eq!(
         result,
-        [TerminalCommand::TerminalCommandSequenceAndSingleArgument {
-            command: String::from("[m-fg-256"),
-            argument: 203
-        }]
+        [
+            // the leading attribute is applied, not dropped
+            TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+                command: String::from("[m"),
+                argument: 1
+            },
+            TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+                command: String::from("[m-fg-256"),
+                argument: 203
+            }
+        ]
     );
 }
 
@@ -919,10 +985,17 @@ fn it_parses_text_formatting_with_non_bright_bold_modifier() {
 
     assert_eq!(
         result,
-        [TerminalCommand::TerminalCommandSequenceAndSingleArgument {
-            command: String::from("[m-fg-256"),
-            argument: 203
-        }]
+        [
+            // the leading attribute is applied, not dropped
+            TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+                command: String::from("[m"),
+                argument: 0
+            },
+            TerminalCommand::TerminalCommandSequenceAndSingleArgument {
+                command: String::from("[m-fg-256"),
+                argument: 203
+            }
+        ]
     );
 }
 
@@ -965,15 +1038,27 @@ fn it_parses_text_correctly_when_ending_in_an_escape() {
 }
 
 #[test]
-fn it_ignores_1000_h() {
+fn it_forwards_mouse_tracking_1000_h() {
+    // Mouse tracking used to be dropped; the screen needs it to report clicks.
     let result = parse("\u{1b}[?1000h", |_output| {});
 
-    assert_eq!(result, []);
+    assert_eq!(
+        result,
+        [TerminalCommand::TerminalCommandSequence {
+            command: String::from("[?1000h"),
+        }]
+    );
 }
 
 #[test]
-fn it_ignores_1000_l() {
+fn it_forwards_mouse_tracking_1000_l() {
+    // Mouse tracking used to be dropped; the screen needs it to report clicks.
     let result = parse("\u{1b}[?1000l", |_output| {});
 
-    assert_eq!(result, []);
+    assert_eq!(
+        result,
+        [TerminalCommand::TerminalCommandSequence {
+            command: String::from("[?1000l"),
+        }]
+    );
 }

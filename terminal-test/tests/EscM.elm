@@ -43,7 +43,7 @@ suite =
                                 "12345"
                                 (String.trimRight content)
                         ]
-        , test "ESC M, then some text, then another ESC M puts only spaces of that text length at the top" <|
+        , test "ESC M, then some text, then another ESC M moves that text down and leaves the top blank" <|
             \_ ->
                 let
                     startingModel =
@@ -73,11 +73,13 @@ suite =
                     |> Editor.Lib.renderableLinesToContents
                     |> Expect.all
                         [ \content ->
+                            -- Reverse index on the top line scrolls the screen down:
+                            -- the text moves to the second line and the top line is blank
                             Expect.equal
-                                ""
+                                (String.repeat 80 " " ++ "\n12345")
                                 (String.trimRight content)
                         ]
-        , test "some text on the first line, then ESC M 2 times puts only spaces at the top" <|
+        , test "some text on the first line, then ESC M 2 times moves it down two lines" <|
             \_ ->
                 let
                     startingModel =
@@ -107,8 +109,9 @@ suite =
                     |> Editor.Lib.renderableLinesToContents
                     |> Expect.all
                         [ \content ->
+                            -- scrolled down twice: two blank lines, then the text
                             Expect.equal
-                                ""
+                                (String.repeat 80 " " ++ "\n" ++ String.repeat 80 " " ++ "\ntest")
                                 (String.trimRight content)
                         ]
         ]

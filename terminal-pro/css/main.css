@@ -1,9 +1,14 @@
-@import "tailwindcss/base";
-@import "tailwindcss/components";
+@import "tailwindcss";
 
-@import "vterm.css";
+/* Custom colors (white, lightgray...) */
+@config "../tailwind.config.js";
 
-@import "tailwindcss/utilities";
+/* Class names live in Elm sources, some of them outside this directory */
+@source "../src";
+@source "../../terminal/src";
+@source "../../editor/src";
+
+@import "./vterm.css";
 
 /* Kill the macOS rubber-band scroll on every scroll container — this is
    a native app, not a web page, and the bounce makes the UI feel like

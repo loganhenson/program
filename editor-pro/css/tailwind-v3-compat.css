@@ -1,0 +1,74 @@
+/* Tailwind 3 -> 4 compatibility.
+
+   Tailwind 4 changed a handful of defaults. Everything in this file pins a
+   Tailwind 3 default the app was built against, so the upgrade does not
+   change how anything looks. Each block can be deleted on its own to adopt
+   the Tailwind 4 default instead. */
+
+@theme {
+  /* v4 lists -apple-system/BlinkMacSystemFont/... first; v3 used the
+     ui-sans-serif/system-ui stack. */
+  --font-sans:
+    ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+    "Segoe UI Symbol", "Noto Color Emoji";
+
+  /* v4 re-tuned the default palette in oklch. These are the v3 values of
+     the default colors the app uses (any other palette color is v4's). */
+  --color-red-700: #b91c1c;
+  --color-blue-400: #60a5fa;
+  --color-blue-500: #3b82f6;
+  --color-blue-700: #1d4ed8;
+  --color-gray-400: #9ca3af;
+  --color-gray-900: #111827;
+
+  /* v4 pairs text-* sizes with a unitless line-height (a ratio, inherited as
+     a ratio); v3 used fixed lengths, which children inherit unchanged. */
+  --text-xs--line-height: 1rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base--line-height: 1.5rem;
+  --text-2xl--line-height: 2rem;
+}
+
+/* `max-w-1/2` was not a Tailwind 3 utility, so the class in src/Layout.elm
+   never did anything. Tailwind 4 would start honoring it (max-width: 50%);
+   delete this line to let it. */
+@source not inline("max-w-1/2");
+
+/* The v3 preflight gave buttons a pointer cursor; v4 leaves the default. */
+button,
+[role="button"] {
+  cursor: pointer;
+}
+
+:disabled {
+  cursor: default;
+}
+
+/* The v3 preflight reset text-transform on buttons and selects. */
+button,
+select {
+  text-transform: none;
+}
+
+/* The v4 preflight also clears the background and corner radius of text
+   inputs, selects and textareas; v3 only reset the background of buttons
+   and left the rest to the browser. */
+input:where(:not([type='button'], [type='reset'], [type='submit'])),
+select,
+textarea {
+  background-color: revert;
+}
+
+button,
+input,
+select,
+optgroup,
+textarea {
+  border-radius: revert;
+}
+
+/* v3 placeholder color (gray-400); v4 uses the text color at 50% opacity. */
+input::placeholder,
+textarea::placeholder {
+  color: #9ca3af;
+}

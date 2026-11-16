@@ -34,7 +34,7 @@ import Process
 import Tabs.Tabs
 import Welcome.Welcome
 import Workspace.Lib as WL
-import Workspace.Types exposing (Workspace)
+import Workspace.Types exposing (TerminalTab, Workspace)
 
 
 {-| Push the active workspace's identity + active file + active terminal
@@ -99,7 +99,7 @@ openTerminalInWorkspace workspaceId model =
                     "term-" ++ String.fromInt ws.terminalCounter
 
                 newTerminalModel =
-                    Terminal.init ws.projectPath PortHandlers.editorPorts (PortHandlers.terminalPorts ws.projectPath)
+                    Terminal.init ws.projectPath PortHandlers.editorPorts (PortHandlers.terminalPorts ws.projectPath newId ws.projectPath)
 
                 newTab =
                     { id = newId, terminal = newTerminalModel, closeArmed = False }
@@ -282,8 +282,9 @@ update msg model_ =
                                     Terminal.update terminalMsg tab.terminal
                             in
                             ( WL.mapTerminalInWorkspace ws.projectPath tab.id (\t -> { t | terminal = nextTerminal }) model
-                            , Cmd.map TerminalMsg terminalMsgs
+                            , Cmd.map (TerminalMsgFor ws.projectPath tab.id) terminalMsgs
                             )
+                                |> closeTerminalIfExited ws.projectPath tab nextTerminal
 
         TerminalMsgFor workspaceId terminalId terminalMsg ->
             -- Routed terminal event from Rust (output / sendResizedToTerminal).
@@ -306,6 +307,7 @@ update msg model_ =
                             ( WL.mapTerminalInWorkspace workspaceId terminalId (\t -> { t | terminal = nextTerminal }) model
                             , Cmd.map (TerminalMsgFor workspaceId terminalId) terminalMsgs
                             )
+                                |> closeTerminalIfExited workspaceId tab nextTerminal
 
         NoOp ->
             ( model, Cmd.none )
@@ -878,6 +880,8 @@ terminalSubscriptions =
                     Err _ ->
                         NoOp
             )
+        , Ports.receiveTerminalPaste (TerminalMsg << Terminal.Types.ReceivedPaste)
+        , Ports.receiveTerminalFocus (TerminalMsg << Terminal.Types.ReceivedFocus)
         ]
 
 
@@ -890,6 +894,36 @@ decodeTerminalEnvelope innerDecoder envelope =
             innerDecoder
         )
         envelope
+
+
+{-| When the shell of a terminal exits, its tab closes (the last tab of a
+workspace is replaced by a fresh shell, as when it is closed by hand).
+-}
+closeTerminalIfExited : String -> TerminalTab -> Terminal.Types.Model -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+closeTerminalIfExited workspaceId tab nextTerminal ( model, commands ) =
+    let
+        index =
+            WL.active model
+                |> Maybe.andThen
+                    (\ws ->
+                        if ws.projectPath == workspaceId then
+                            List.Extra.findIndex (\tt -> tt.id == tab.id) ws.terminals
+
+                        else
+                            Nothing
+                    )
+    in
+    if nextTerminal.terminal.exited && not tab.terminal.terminal.exited then
+        case index of
+            Just idx ->
+                update (CloseTerminalConfirmed idx) model
+                    |> Tuple.mapSecond (\closing -> Cmd.batch [ commands, closing ])
+
+            Nothing ->
+                ( model, commands )
+
+    else
+        ( model, commands )
 
 
 subscriptions : Model -> Sub Msg
@@ -1004,7 +1038,7 @@ viewFuzzyFinder ws =
 
 view : Model -> Html.Html Msg
 view model =
-    div [ class "flex flex-col w-full h-full outline-none overflow-hidden" ]
+    div [ class "flex flex-col w-full h-full outline-hidden overflow-hidden" ]
         [ case ( WL.active model, List.isEmpty model.workspaces ) of
             ( Just ws, _ ) ->
                 div [ class "flex flex-col w-full h-full" ]
@@ -1206,7 +1240,7 @@ viewNotifications notifications =
 viewNotificationCard : ( Int, Notification.Types.Notification ) -> Html.Html Msg
 viewNotificationCard ( _, notification ) =
     div
-        [ class "bg-lightgray rounded shadow"
+        [ class "bg-lightgray rounded-sm shadow-sm"
         , style "padding" "10px 12px"
         ]
         [ div [ class "flex", style "gap" "8px" ]

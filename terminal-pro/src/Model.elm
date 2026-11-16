@@ -7,6 +7,9 @@ type alias TerminalTab =
     { id : String
     , terminal : Terminal.Types.Model
     , closeArmed : Bool
+
+    -- the bell rang while the tab was in the background
+    , attention : Bool
     }
 
 

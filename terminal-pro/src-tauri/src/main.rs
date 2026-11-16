@@ -9,7 +9,7 @@ use std::{
   },
   thread,
 };
-use tauri::{Emitter, Listener, Manager, WebviewWindow, Wry};
+use tauri::{Emitter, Listener, Manager, WebviewWindow};
 use terminal::{parse::TerminalCommand, terminal::Size};
 
 fn nerd_font_probe() -> ProbeOutcome {
@@ -29,6 +29,12 @@ fn preflight() -> Report {
   preflight::run(CHECKS)
 }
 
+/// The terminal bell (BEL): the system alert sound.
+#[tauri::command]
+fn bell() {
+  terminal::bell::ring()
+}
+
 /// One PTY session. `is_active` flips to false on close so any in-flight
 /// emits are silenced before the bridge thread observes channel hangup.
 /// `_kill_tx` dropping triggers terminal-server's kill-watcher to reap
@@ -44,9 +50,12 @@ type Terminals = Arc<Mutex<HashMap<String, TerminalSlot>>>;
 
 fn main() {
   tauri::Builder::default()
+    .runtime(tauri_runtime_wry::Wry::default())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_process::init())
-    .invoke_handler(tauri::generate_handler![preflight])
+    .plugin(tauri_plugin_opener::init())
+    .plugin(tauri_plugin_notification::init())
+    .invoke_handler(tauri::generate_handler![preflight, bell])
     .setup(|app| {
       let window = app.get_webview_window("main").unwrap();
       let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
@@ -61,7 +70,7 @@ fn main() {
     .expect("failed to run app");
 }
 
-fn bootstrap(window: WebviewWindow<Wry>, terminals: Terminals, home: String) {
+fn bootstrap(window: WebviewWindow, terminals: Terminals, home: String) {
   let terminals_for_open = terminals.clone();
   let terminals_for_close = terminals.clone();
   let terminals_for_run = terminals.clone();
@@ -145,7 +154,7 @@ fn bootstrap(window: WebviewWindow<Wry>, terminals: Terminals, home: String) {
 
 /// Spawn a PTY for the given terminal id. Output/resize events carry the
 /// id so Elm can route them to the matching tab.
-fn spawn_terminal(window: &WebviewWindow<Wry>, terminal_id: String, directory: String) -> TerminalSlot {
+fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String) -> TerminalSlot {
   let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
   let term_for_output = terminal_id.clone();

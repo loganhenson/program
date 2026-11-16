@@ -4,25 +4,25 @@ import Editor exposing (initialPorts)
 import Editor.Msg
 import Json.Encode
 import Ports
+import Terminal
 import Terminal.Types
 
 
 terminalPorts : String -> Terminal.Types.Ports
 terminalPorts cwd =
-    { requestPasteTerminal = Ports.requestPasteTerminal
-    , requestRunTerminal =
-        \code ->
-            Ports.requestRunTerminal <|
-                Json.Encode.object
-                    [ ( "cwd", Json.Encode.string cwd )
-                    , ( "contents", Json.Encode.string code )
-                    ]
-    , requestCopyTerminal =
-        \_ ->
-            Cmd.none
-    , requestQuit =
-        \_ ->
-            Cmd.none
+    let
+        ports =
+            Terminal.initialPorts
+    in
+    { ports
+        | requestPasteTerminal = Ports.requestPasteTerminal
+        , requestRunTerminal =
+            \code ->
+                Ports.requestRunTerminal <|
+                    Json.Encode.object
+                        [ ( "cwd", Json.Encode.string cwd )
+                        , ( "contents", Json.Encode.string code )
+                        ]
     }
 
 

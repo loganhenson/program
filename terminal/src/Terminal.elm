@@ -1,1562 +1,729 @@
-module Terminal exposing (..)
+module Terminal exposing
+    ( getBuffer
+    , init
+    , initialPorts
+    , scrollToBottom
+    , update
+    , view
+    )
 
 import Array
 import Browser.Dom exposing (getViewportOf, setViewportOf)
-import Dict exposing (Dict)
-import Editor exposing (initialPorts)
+import Editor
 import Editor.Lib
 import Editor.Msg
-import Editor.Syntax.Types exposing (MultilineSymbol)
-import Html exposing (div, text)
-import Html.Attributes exposing (class, id, style)
-import Json.Decode exposing (decodeValue)
-import List.Extra
+import Editor.Styles
+import Html exposing (Html, div, span, text)
+import Html.Attributes exposing (attribute, class, id, style)
+import Html.Events
+import Html.Keyed
+import Html.Lazy
+import Json.Decode as Decode exposing (Decoder, decodeValue)
 import Task
+import Terminal.BoxDrawing
+import Terminal.Color
 import Terminal.Decoders exposing (decodeTerminalCommands, decodeTerminalResized)
-import Terminal.EightBitColors
-import Terminal.Types exposing (Buffer, Model, Msg(..), Terminal, TerminalBuffer(..), TerminalCommand(..), TerminalSize)
+import Terminal.Input
+import Terminal.Screen as Screen
+import Terminal.Types exposing (..)
 
 
-{-| Hard cap on the terminal scrollback buffer. Each line is a
-RenderableLine; a long-running shell printing tens of thousands of
-lines (build logs, `tail -f`) would otherwise grow the model forever.
-The oldest lines are dropped once we exceed this.
+{-| Ports that do nothing. Start from these and override the ones the host
+application implements, so new ports do not break existing applications.
 -}
-maxScrollbackLines : Int
-maxScrollbackLines =
-    10000
+initialPorts : Ports
+initialPorts =
+    { requestRunTerminal = \_ -> Cmd.none
+    , requestPasteTerminal = \_ -> Cmd.none
+    , requestCopyTerminal = \_ -> Cmd.none
+    , requestQuit = \_ -> Cmd.none
+    , requestSetTitle = \_ -> Cmd.none
+    , requestBell = \_ -> Cmd.none
+    , requestNotify = \_ -> Cmd.none
+    , requestWriteClipboard = \_ -> Cmd.none
+    , requestExited = \_ -> Cmd.none
+    }
 
 
-init : String -> Editor.Msg.Ports -> Terminal.Types.Ports -> Model
-init cwd editorPorts terminalPorts =
-    { terminal =
-        { size =
-            { height = 4
-            , width = 80
-            }
-        , scrollback = makeEmptyScrollbackEditor editorPorts
-        , activeBuffer = Primary
-        , primaryBuffer =
-            makeEmptyBuffer (TerminalSize 4 80) editorPorts
-        , alternateBuffer =
-            makeEmptyBuffer (TerminalSize 4 80) editorPorts
-        , styles = Dict.fromList []
-        }
+{-| The editor ports are not used anymore (the terminal renders its own
+screen); the argument is kept so existing applications keep compiling.
+-}
+init : String -> Editor.Msg.Ports -> Ports -> Model
+init _ _ terminalPorts =
+    { terminal = Screen.init { height = 4, width = 80 }
     , ports = terminalPorts
     }
 
 
-makeEmptyScrollbackEditor : Editor.Msg.Ports -> Editor.Msg.Model
-makeEmptyScrollbackEditor terminalPorts =
-    let
-        editor =
-            Editor.Lib.init False
-                ""
-                ""
-                { vimMode = False
-                , showLineNumbers = False
-                , padBottom = False
-                , padRight = False
-                , showCursor = False
-                , characterWidth = 8.40625
-                }
-                terminalPorts
-
-        editorTravelable =
-            editor.travelable
-    in
-    { editor | travelable = { editorTravelable | renderableLines = [] } }
-
-
-makeEmptyBuffer : TerminalSize -> Editor.Msg.Ports -> Buffer
-makeEmptyBuffer size terminalPorts =
-    let
-        editor =
-            Editor.Lib.init False
-                "0"
-                --(String.repeat size.height (String.repeat size.width " " ++ "\n")
-                (List.repeat size.height (Editor.Lib.createRenderableLine 0 (String.repeat size.width " "))
-                    |> Editor.Lib.renderableLinesToContents
-                )
-                -- We need the empty lines to exist to be able to change them (resize adds lines).
-                { vimMode = True
-                , showLineNumbers = False
-                , padBottom = False
-                , padRight = False
-                , showCursor = True
-                , characterWidth = 3
-                }
-                terminalPorts
-    in
-    Buffer editor Nothing
-
-
-terminalBufferPorts : Editor.Msg.Ports
-terminalBufferPorts =
-    initialPorts
-
-
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
+    let
+        terminal =
+            model.terminal
+
+        send input =
+            case input of
+                Just bytes ->
+                    model.ports.requestRunTerminal bytes
+
+                Nothing ->
+                    Cmd.none
+    in
     case msg of
         NoOp ->
             ( model, Cmd.none )
 
         ReceivedCharacterWidth characterWidth ->
-            let
-                terminal =
-                    model.terminal
-
-                scrollback =
-                    terminal.scrollback
-
-                scrollbackConfig =
-                    scrollback.config
-
-                nextScrollbackConfig =
-                    { scrollbackConfig | characterWidth = characterWidth }
-
-                primaryBuffer =
-                    terminal.primaryBuffer
-
-                primaryBufferEditor =
-                    primaryBuffer.editor
-
-                primaryBufferEditorConfig =
-                    primaryBufferEditor.config
-
-                nextPrimaryBufferEditorConfig =
-                    { primaryBufferEditorConfig | characterWidth = characterWidth }
-
-                alternateBuffer =
-                    terminal.alternateBuffer
-
-                alternateBufferEditor =
-                    alternateBuffer.editor
-
-                alternateBufferEditorConfig =
-                    alternateBufferEditor.config
-
-                nextAlternateBufferEditorConfig =
-                    { alternateBufferEditorConfig | characterWidth = characterWidth }
-
-                nextTerminal =
-                    { terminal
-                        | scrollback =
-                            { scrollback
-                                | config = nextScrollbackConfig
-                            }
-                        , primaryBuffer =
-                            { primaryBuffer
-                                | editor =
-                                    { primaryBufferEditor
-                                        | config = nextPrimaryBufferEditorConfig
-                                    }
-                            }
-                        , alternateBuffer =
-                            { alternateBuffer
-                                | editor =
-                                    { alternateBufferEditor
-                                        | config = nextAlternateBufferEditorConfig
-                                    }
-                            }
-                    }
-            in
-            ( { model
-                | terminal = nextTerminal
-              }
-            , Cmd.none
-            )
+            ( { model | terminal = { terminal | characterWidth = characterWidth } }, Cmd.none )
 
         ReceivedTerminalResized json ->
             case decodeValue decodeTerminalResized json of
-                Ok { height, width } ->
-                    let
-                        nextTerminal =
-                            case model.terminal.activeBuffer of
-                                Alternate ->
-                                    model.terminal
-
-                                Primary ->
-                                    let
-                                        term =
-                                            model.terminal
-
-                                        editor =
-                                            term.primaryBuffer.editor
-
-                                        currentLineCount =
-                                            List.length editor.travelable.renderableLines
-                                    in
-                                    if height > currentLineCount then
-                                        let
-                                            travelable =
-                                                editor.travelable
-
-                                            nextTravelable =
-                                                { travelable | renderableLines = travelable.renderableLines ++ List.repeat (height - currentLineCount) (Editor.Lib.createRenderableLine 0 "") }
-                                        in
-                                        updateTerminalEditor { editor | travelable = nextTravelable } { term | size = { height = height, width = width } }
-
-                                    else if height < currentLineCount then
-                                        let
-                                            travelable =
-                                                editor.travelable
-
-                                            nextRenderableLines =
-                                                travelable.renderableLines
-                                                    |> List.reverse
-                                                    |> Array.fromList
-                                                    |> Array.slice 0 height
-                                                    |> Array.toList
-                                                    |> List.reverse
-
-                                            { x, y } =
-                                                travelable.cursorPosition
-
-                                            nextTravelable =
-                                                { travelable
-                                                    | renderableLines = nextRenderableLines
-                                                    , cursorPosition = { x = x, y = max 0 (min (height - 1) y) }
-                                                }
-                                        in
-                                        updateTerminalEditor { editor | travelable = nextTravelable } { term | size = { height = height, width = width } }
-
-                                    else
-                                        { term | size = { height = height, width = width } }
-                    in
-                    ( { model
-                        | terminal = nextTerminal
-                      }
-                    , Cmd.none
+                Ok size ->
+                    ( { model | terminal = Screen.resize size terminal }
+                    , scrollToBottom "terminal-container"
                     )
 
-                Err err ->
+                Err _ ->
                     ( model, Cmd.none )
 
         ReceivedTerminalOutput json ->
             case decodeValue decodeTerminalCommands json of
                 Ok commands ->
                     let
-                        ( nextTerminal, msgs ) =
-                            run commands model.terminal
+                        ( nextTerminal, effects ) =
+                            Screen.applyAll commands terminal
                     in
-                    ( { model
-                        | terminal = nextTerminal
-                      }
-                    , Cmd.batch [ Cmd.map TerminalEditorMsg msgs, scrollToBottom "terminal-container" ]
+                    ( { model | terminal = nextTerminal }
+                    , Cmd.batch [ perform model.ports effects, scrollToBottom "terminal-container" ]
                     )
 
-                Err err ->
+                Err _ ->
                     ( model, Cmd.none )
 
-        TerminalEditorMsg editorMsg ->
-            let
-                term =
-                    model.terminal
+        ReceivedPaste pasted ->
+            ( model
+            , Cmd.batch
+                [ model.ports.requestRunTerminal (Terminal.Input.encodePaste terminal.modes.bracketedPaste pasted)
+                , scrollToBottom "terminal-container"
+                ]
+            )
 
-                ( editor, _ ) =
-                    getBuffer term
+        ReceivedFocus focused ->
+            ( { model | terminal = { terminal | focused = focused } }
+            , if terminal.modes.focusEvents && focused /= terminal.focused then
+                model.ports.requestRunTerminal (Terminal.Input.encodeFocus focused)
 
-                ( nextEditor, msgs ) =
-                    Editor.update editorMsg editor
+              else
+                Cmd.none
+            )
 
-                nextTerminal =
-                    updateTerminalEditor nextEditor term
-            in
-            ( { model | terminal = nextTerminal }, Cmd.batch [ Cmd.map TerminalEditorMsg msgs ] )
+        ReceivedMouse event ->
+            case event.action of
+                MouseWheel delta ->
+                    let
+                        mouse =
+                            terminal.mouse
 
+                        distance =
+                            mouse.wheel + delta
 
-viewScrollback : Terminal -> Html.Html Msg
-viewScrollback terminal =
-    case terminal.activeBuffer of
-        Primary ->
-            let
-                buffer =
-                    terminal.primaryBuffer
-            in
-            case List.length terminal.scrollback.travelable.renderableLines of
-                0 ->
-                    text ""
+                        lines =
+                            truncate (distance / 24)
+                    in
+                    ( { model | terminal = { terminal | mouse = { mouse | wheel = distance - toFloat (lines * 24) } } }
+                    , send (Terminal.Input.encodeWheel terminal event lines)
+                    )
 
                 _ ->
-                    div [ style "height" "min-content" ] [ Html.map (always NoOp) <| Editor.view terminal.scrollback ]
-
-        Alternate ->
-            text ""
-
-
-view : Model -> Html.Html Msg
-view model =
-    div [ class "w-full h-full overflow-hidden" ]
-        [ div [ id "terminal-container", class "w-full h-full overflow-y-scroll p-1" ]
-            [ viewScrollback model.terminal
-            , Html.map TerminalEditorMsg <|
-                div [ id "terminal" ]
-                    [ Editor.view (model.terminal |> getBuffer |> Tuple.first)
-                    ]
-            ]
-        ]
-
-
-getBuffer : Terminal -> ( Editor.Msg.Model, Maybe ( Int, Int ) )
-getBuffer terminal =
-    case terminal.activeBuffer of
-        Primary ->
-            let
-                buffer =
-                    terminal.primaryBuffer
-            in
-            ( buffer.editor, buffer.scrollRegion )
-
-        Alternate ->
-            let
-                buffer =
-                    terminal.alternateBuffer
-            in
-            ( buffer.editor, buffer.scrollRegion )
-
-
-insertText : String -> Terminal -> Terminal
-insertText text terminal =
-    let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
-
-        travelable =
-            editor.travelable
-
-        { x, y } =
-            editor.travelable.cursorPosition
-
-        nextRenderableLines =
-            List.Extra.updateAt y
-                (\renderableLine ->
                     let
-                        start =
-                            String.slice 0 x renderableLine.text
-                                |> String.padRight x ' '
+                        ( report, cell ) =
+                            Terminal.Input.encodeMouse terminal event
 
-                        middle =
-                            text
-
-                        end =
-                            String.slice (x + String.length text) (String.length renderableLine.text) renderableLine.text
-
-                        nextText =
-                            start
-                                ++ middle
-                                ++ end
+                        mouse =
+                            terminal.mouse
                     in
-                    { renderableLine
-                        | text = nextText
-                        , multilineSymbols = setStyle renderableLine x (x + String.length text) terminal.styles
-                    }
-                )
-                travelable.renderableLines
-
-        len =
-            x + String.length text
-
-        nextX =
-            if len > terminal.size.width then
-                0
-
-            else
-                len
-
-        nextY =
-            if len > terminal.size.width then
-                y + 1
-
-            else
-                y
-    in
-    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines, cursorPosition = { x = nextX, y = nextY } } } terminal
+                    ( { model | terminal = { terminal | mouse = { mouse | cell = cell } } }
+                    , send report
+                    )
 
 
-eraseCharacters : Int -> Terminal -> Terminal
-eraseCharacters count terminal =
+{-| Carry out what the output asked for. All replies go out in one write, in
+the order the queries came in.
+-}
+perform : Ports -> List Effect -> Cmd Msg
+perform ports effects =
     let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
+        replies =
+            List.filterMap
+                (\effect ->
+                    case effect of
+                        Reply reply ->
+                            Just reply
 
-        travelable =
-            editor.travelable
-
-        { x, y } =
-            editor.travelable.cursorPosition
-
-        nextRenderableLines =
-            List.Extra.updateAt y
-                (\renderableLine ->
-                    let
-                        start =
-                            String.slice 0 x renderableLine.text
-
-                        middle =
-                            String.repeat count " "
-
-                        end =
-                            String.slice (x + count) terminal.size.width renderableLine.text
-
-                        nextText =
-                            start
-                                ++ middle
-                                ++ end
-                                |> String.slice 0 terminal.size.width
-                    in
-                    { renderableLine
-                        | text = nextText
-                        , multilineSymbols = setStyle renderableLine x (x + count) terminal.styles
-                    }
+                        _ ->
+                            Nothing
                 )
-                travelable.renderableLines
+                effects
+
+        other effect =
+            case effect of
+                Reply _ ->
+                    Cmd.none
+
+                SetTitle title ->
+                    ports.requestSetTitle title
+
+                Bell ->
+                    ports.requestBell ()
+
+                Notify message ->
+                    ports.requestNotify message
+
+                WriteClipboard contents ->
+                    ports.requestWriteClipboard contents
+
+                ChildExited ->
+                    ports.requestExited ()
     in
-    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
+    Cmd.batch
+        ((if List.isEmpty replies then
+            Cmd.none
 
-
-insertSpaces : Int -> Terminal -> Terminal
-insertSpaces count terminal =
-    let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
-
-        travelable =
-            editor.travelable
-
-        { x, y } =
-            editor.travelable.cursorPosition
-
-        nextRenderableLines =
-            List.Extra.updateAt y
-                (\renderableLine ->
-                    let
-                        start =
-                            String.slice 0 x renderableLine.text
-
-                        middle =
-                            String.repeat count " "
-
-                        end =
-                            String.slice x (String.length renderableLine.text) renderableLine.text
-
-                        nextText =
-                            start
-                                ++ middle
-                                ++ end
-                                |> String.slice 0 terminal.size.width
-                    in
-                    { renderableLine
-                        | text = nextText
-                        , multilineSymbols = setStyle renderableLine x (x + count) terminal.styles
-                    }
-                )
-                travelable.renderableLines
-    in
-    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-
-insertCharacter : String -> Terminal -> Terminal
-insertCharacter text terminal =
-    let
-        ( editor, _ ) =
-            getBuffer terminal
-
-        nextTerminal =
-            if editor.travelable.cursorPosition.x == terminal.size.width then
-                newLine terminal.size terminal
-
-            else
-                terminal
-
-        ( nextEditor, _ ) =
-            getBuffer nextTerminal
-
-        travelable =
-            nextEditor.travelable
-
-        { x, y } =
-            let
-                cp =
-                    nextEditor.travelable.cursorPosition
-            in
-            if cp.y > editor.travelable.cursorPosition.y || cp.x == terminal.size.width then
-                { cp | x = 0, y = cp.y }
-
-            else
-                { cp | x = cp.x, y = cp.y }
-
-        nextRenderableLines =
-            List.Extra.updateAt y
-                (\renderableLine ->
-                    let
-                        start =
-                            String.slice 0 x renderableLine.text
-                                |> String.padRight x ' '
-
-                        middle =
-                            text
-
-                        end =
-                            String.slice (x + String.length text) (String.length renderableLine.text) renderableLine.text
-
-                        nextText =
-                            let
-                                t =
-                                    start
-                                        ++ middle
-                                        ++ end
-                            in
-                            String.slice 0 (min terminal.size.width (String.length t)) t
-                    in
-                    { renderableLine
-                        | text = nextText
-                        , multilineSymbols = setStyle renderableLine x (x + 1) nextTerminal.styles
-                    }
-                )
-                nextEditor.travelable.renderableLines
-    in
-    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines, cursorPosition = { x = x + 1, y = y } } } nextTerminal
-
-
-insertLongText : String -> Terminal -> Terminal
-insertLongText text state =
-    String.foldl
-        (\char nextState ->
-            insertCharacter (String.fromChar char) nextState
+          else
+            ports.requestRunTerminal (String.concat replies)
+         )
+            :: List.map other effects
         )
-        state
-        text
-
-
-updateTerminalEditor : Editor.Msg.Model -> Terminal -> Terminal
-updateTerminalEditor updatedEditor terminal =
-    case terminal.activeBuffer of
-        Primary ->
-            let
-                buf =
-                    terminal.primaryBuffer
-            in
-            { terminal | primaryBuffer = { buf | editor = updatedEditor } }
-
-        Alternate ->
-            let
-                buf =
-                    terminal.alternateBuffer
-            in
-            { terminal | alternateBuffer = { buf | editor = updatedEditor } }
-
-
-updateTerminalScrollRegion : Maybe ( Int, Int ) -> Terminal -> Terminal
-updateTerminalScrollRegion updatedScrollRegion terminal =
-    case terminal.activeBuffer of
-        Primary ->
-            let
-                buf =
-                    terminal.primaryBuffer
-            in
-            { terminal | primaryBuffer = { buf | scrollRegion = updatedScrollRegion } }
-
-        Alternate ->
-            let
-                buf =
-                    terminal.alternateBuffer
-            in
-            { terminal | alternateBuffer = { buf | scrollRegion = updatedScrollRegion } }
-
-
-run : List TerminalCommand -> Terminal -> ( Terminal, Cmd Editor.Msg.Msg )
-run commands model =
-    let
-        nextTerminal =
-            List.foldl
-                (\command terminal ->
-                    let
-                        ( editor, scrollRegion ) =
-                            getBuffer terminal
-
-                        travelable =
-                            editor.travelable
-
-                        { x, y } =
-                            travelable.cursorPosition
-                    in
-                    case command of
-                        TerminalCommandSequenceAndSingleStringArgument sequence arg ->
-                            case sequence of
-                                "set-icon-name-and-window-title" ->
-                                    terminal
-
-                                "set-icon-name" ->
-                                    terminal
-
-                                "set-window-title" ->
-                                    terminal
-
-                                _ ->
-                                    terminal
-
-                        TerminalCommandText text ->
-                            if text == "" then
-                                terminal
-
-                            else if (x + String.length text) < terminal.size.width then
-                                insertText text terminal
-
-                            else
-                                insertLongText text terminal
-
-                        TerminalCommandSequenceAndDoubleArgument sequence arg1 arg2 ->
-                            case sequence of
-                                "[H" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = arg2 - 1, y = arg1 - 1 } } } terminal
-
-                                "[r" ->
-                                    -- Set scroll region
-                                    updateTerminalScrollRegion (Just ( arg1, arg2 )) terminal
-
-                                "[m" ->
-                                    { terminal | styles = terminal.styles |> Dict.insert "font-weight" "bold" |> Dict.insert "color" (getAnsiColor arg2) }
-
-                                unhandled ->
-                                    --let
-                                    --    debug =
-                                    --        Debug.log "UNHANDLED" ( unhandled, ( arg1, arg2 ) )
-                                    --in
-                                    terminal
-
-                        TerminalCommandSequenceAndSingleArgument sequence argument ->
-                            case sequence of
-                                "[A" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = x, y = max 0 (y - max 1 argument) } } } terminal
-
-                                "[B" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = x, y = min (model.size.height - 1) (y + max 1 argument) } } } terminal
-
-                                "[C" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = min terminal.size.width (x + max 1 argument), y = y } } } terminal
-
-                                "[D" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = max 0 (x - max 1 argument), y = y } } } terminal
-
-                                "[E" ->
-                                    -- Cursor Next Line
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = min (model.size.height - 1) (y + max 1 argument) } } } terminal
-
-                                "[F" ->
-                                    -- Cursor Previous Line
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = max 0 (y - max 1 argument) } } } terminal
-
-                                "[G" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = max 0 (max 1 argument - 1), y = y } } } terminal
-
-                                "[d" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = x, y = min (model.size.height - 1) (max 1 argument - 1) } } } terminal
-
-                                "[@" ->
-                                    insertSpaces argument terminal
-
-                                "[X" ->
-                                    eraseCharacters argument terminal
-
-                                "[P" ->
-                                    --Number of characters to delete (default = 1).
-                                    let
-                                        nextRenderableLines =
-                                            List.Extra.updateAt y
-                                                (\renderableLine ->
-                                                    { renderableLine | text = deleteCharacters x argument renderableLine.text }
-                                                )
-                                                travelable.renderableLines
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[L" ->
-                                    -- Insert Line(s)
-                                    insertLines argument terminal
-
-                                "[M" ->
-                                    -- Delete Line(s)
-                                    deleteLines argument terminal
-
-                                "[T" ->
-                                    -- Scroll down argument lines
-                                    let
-                                        len =
-                                            List.length travelable.renderableLines
-                                    in
-                                    let
-                                        nextRenderableLines =
-                                            List.concat
-                                                [ List.repeat argument (Editor.Lib.createRenderableLine 0 "")
-                                                , travelable.renderableLines
-                                                ]
-                                                |> Array.fromList
-                                                |> Array.slice 0 len
-                                                |> Array.toList
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[S" ->
-                                    -- Scroll up argument lines
-                                    let
-                                        len =
-                                            List.length travelable.renderableLines
-                                    in
-                                    let
-                                        nextRenderableLines =
-                                            List.concat
-                                                [ travelable.renderableLines
-                                                , List.repeat argument (Editor.Lib.createRenderableLine 0 "")
-                                                ]
-                                                |> Array.fromList
-                                                |> Array.slice argument (len + argument)
-                                                |> Array.toList
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[m-fg-256" ->
-                                    { terminal
-                                        | styles =
-                                            terminal.styles
-                                                |> Dict.insert
-                                                    "color"
-                                                    ("#" ++ Terminal.EightBitColors.getColorByNumber argument)
-                                                |> Dict.insert
-                                                    "font-weight"
-                                                    "normal"
-                                    }
-
-                                "[m-bg-256" ->
-                                    { terminal
-                                        | styles =
-                                            terminal.styles
-                                                |> Dict.insert
-                                                    "background"
-                                                    ("#" ++ Terminal.EightBitColors.getColorByNumber argument)
-                                                |> Dict.insert "font-weight" "normal"
-                                    }
-
-                                "[m" ->
-                                    { terminal | styles = setAnsiStyle argument terminal.styles }
-
-                                unhandled ->
-                                    --let
-                                    --    debug =
-                                    --        Debug.log "UNHANDLED" ( unhandled, argument )
-                                    --in
-                                    terminal
-
-                        TerminalCommandSequenceAndTripleArgument sequence arg1 arg2 arg3 ->
-                            case sequence of
-                                "[m-bg-rgb" ->
-                                    { terminal
-                                        | styles =
-                                            terminal.styles
-                                                |> Dict.insert "background"
-                                                    ("rgb("
-                                                        ++ String.fromInt arg1
-                                                        ++ ","
-                                                        ++ String.fromInt arg2
-                                                        ++ ","
-                                                        ++ String.fromInt arg3
-                                                        ++ ")"
-                                                    )
-                                    }
-
-                                "[m-fg-rgb" ->
-                                    { terminal
-                                        | styles =
-                                            terminal.styles
-                                                |> Dict.insert "color"
-                                                    ("rgb("
-                                                        ++ String.fromInt arg1
-                                                        ++ ","
-                                                        ++ String.fromInt arg2
-                                                        ++ ","
-                                                        ++ String.fromInt arg3
-                                                        ++ ")"
-                                                    )
-                                    }
-
-                                unhandled ->
-                                    --let
-                                    --    debug =
-                                    --        Debug.log "UNHANDLED" ( unhandled, ( arg1, arg2, arg3 ) )
-                                    --in
-                                    terminal
-
-                        TerminalCommandSequence sequence ->
-                            case sequence of
-                                "\n" ->
-                                    newLine model.size terminal
-
-                                "E" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = y + 1 } } } terminal
-
-                                "D" ->
-                                    index model.size terminal
-
-                                "M" ->
-                                    reverseIndex model.size terminal
-
-                                "\u{0008}" ->
-                                    -- \b
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = max 0 (x - 1), y = y } } } terminal
-
-                                "\u{000D}" ->
-                                    -- \r
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = y } } } terminal
-
-                                "\u{0009}" ->
-                                    -- \t  advance to the next 8-column tab stop (clamped to the last column)
-                                    let
-                                        nextStop =
-                                            min (terminal.size.width - 1) (((x // 8) + 1) * 8)
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = nextStop, y = y } } } terminal
-
-                                "#8" ->
-                                    updateTerminalEditor
-                                        { editor
-                                            | travelable =
-                                                { travelable
-                                                    | renderableLines = Editor.Lib.contentsToRenderableLines (String.repeat model.size.height (String.repeat model.size.width "E" ++ "\n"))
-                                                    , cursorPosition = { x = 0, y = 0 }
-                                                }
-                                        }
-                                        terminal
-
-                                "[E" ->
-                                    -- Cursor Next Line
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = min (model.size.height - 1) (y + 1) } } } terminal
-
-                                "[F" ->
-                                    -- Cursor Previoous Line
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = max 0 (y - 1) } } } terminal
-
-                                "[H" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = 0 } } } terminal
-
-                                "[K" ->
-                                    -- Clear line from cursor right (same as [0K)
-                                    let
-                                        nextRenderableLines =
-                                            eraseLineFromCursorToEnd model.size.width x y travelable.renderableLines
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[0K" ->
-                                    -- Clear line from cursor right
-                                    let
-                                        nextRenderableLines =
-                                            eraseLineFromCursorToEnd model.size.width x y travelable.renderableLines
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[1K" ->
-                                    -- Clear line from start to cursor
-                                    let
-                                        nextRenderableLines =
-                                            eraseLineFromStartToCursor model.size.width x y travelable.renderableLines
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[2K" ->
-                                    -- Clear entire line
-                                    let
-                                        nextRenderableLines =
-                                            List.Extra.updateAt y
-                                                (\renderableLine ->
-                                                    { renderableLine | text = String.repeat model.size.width " " }
-                                                )
-                                                travelable.renderableLines
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[L" ->
-                                    insertLines 1 terminal
-
-                                "[M" ->
-                                    deleteLines 1 terminal
-
-                                "[J" ->
-                                    -- Clear screen from cursor to end (same as [0J)
-                                    let
-                                        nextRenderableLines =
-                                            eraseLineFromCursorToEnd model.size.width x y travelable.renderableLines
-                                                |> List.Extra.updateIfIndex (\i -> i > y)
-                                                    (\line ->
-                                                        { line | text = String.repeat model.size.width " ", multilineSymbols = [] }
-                                                    )
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[0J" ->
-                                    -- Clear screen from cursor to end
-                                    let
-                                        nextRenderableLines =
-                                            eraseLineFromCursorToEnd model.size.width x y travelable.renderableLines
-                                                |> List.Extra.updateIfIndex (\i -> i > y)
-                                                    (\line ->
-                                                        { line | text = String.repeat model.size.width " ", multilineSymbols = [] }
-                                                    )
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[1J" ->
-                                    -- Clear from start to cursor
-                                    let
-                                        nextRenderableLines =
-                                            eraseLineFromStartToCursor model.size.width x y travelable.renderableLines
-                                                |> List.Extra.updateIfIndex (\i -> i < y) (\line -> { line | text = String.repeat model.size.width " ", multilineSymbols = [] })
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                "[2J" ->
-                                    -- Clear entire screen
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = Editor.Lib.contentsToRenderableLines (String.repeat model.size.height (String.repeat model.size.width " " ++ "\n")) } } terminal
-
-                                "[?1049h" ->
-                                    -- Switch to new alternate buffer
-                                    { terminal | activeBuffer = Alternate, alternateBuffer = makeEmptyBuffer terminal.size terminalBufferPorts }
-
-                                "[?1049l" ->
-                                    -- Switch to primary buffer
-                                    { terminal | activeBuffer = Primary }
-
-                                -- Underline mode
-                                "[4m" ->
-                                    { terminal | styles = terminal.styles |> Dict.insert "text-decoration" "underline" }
-
-                                -- Reset Style
-                                "[0m" ->
-                                    { terminal | styles = Dict.fromList [] }
-
-                                -- Reset Style
-                                "[49m" ->
-                                    { terminal | styles = Dict.fromList [] }
-
-                                -- Reset Style
-                                "[m" ->
-                                    { terminal | styles = Dict.fromList [] }
-
-                                "[A" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = x, y = max 0 (y - 1) } } } terminal
-
-                                "[B" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = x, y = min (model.size.height - 1) (y + 1) } } } terminal
-
-                                "[C" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = x + 1, y = y } } } terminal
-
-                                "[D" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = max 0 (x - 1), y = y } } } terminal
-
-                                "[G" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = 0, y = y } } } terminal
-
-                                "[d" ->
-                                    updateTerminalEditor { editor | travelable = { travelable | cursorPosition = { x = x, y = 0 } } } terminal
-
-                                "[@" ->
-                                    insertSpaces 1 terminal
-
-                                "[X" ->
-                                    eraseCharacters 1 terminal
-
-                                "[P" ->
-                                    --Number of characters to delete (default = 1).
-                                    let
-                                        nextRenderableLines =
-                                            List.Extra.updateAt y
-                                                (\renderableLine ->
-                                                    { renderableLine | text = deleteCharacters x 1 renderableLine.text }
-                                                )
-                                                travelable.renderableLines
-                                    in
-                                    updateTerminalEditor { editor | travelable = { travelable | renderableLines = nextRenderableLines } } terminal
-
-                                unhandled ->
-                                    --let
-                                    --    debug =
-                                    --        Debug.log "UNHANDLED" unhandled
-                                    --in
-                                    terminal
-                )
-                model
-                commands
-
-        ( nextTerminalEditor, _ ) =
-            getBuffer nextTerminal
-
-        ( nextEditor, editorMsgs ) =
-            Editor.Lib.startUpdateEditor { nextTerminalEditor | travelable = nextTerminalEditor.travelable }
-                |> Editor.Lib.updateCursorPosition nextTerminalEditor.travelable.cursorPosition
-                |> Editor.Lib.updateEditor nextTerminalEditor
-    in
-    ( updateTerminalEditor nextEditor nextTerminal, editorMsgs )
-
-
-cleanMultilineSymbols : Editor.Msg.RenderableLine -> Int -> Editor.Msg.RenderableLine
-cleanMultilineSymbols renderableLine start =
-    -- need to MERGE styles symbols into the most granular
-    { renderableLine
-        | multilineSymbols = List.Extra.filterNot (\line -> line.start == start) renderableLine.multilineSymbols
-    }
 
 
 scrollToBottom : String -> Cmd Msg
-scrollToBottom id =
+scrollToBottom elementId =
     -- Two rAF-equivalent ticks: first task lets layout settle (getViewportOf forces
     -- a measurement), second sets the scroll position to the (now correct) scene
     -- height. The previous one-shot chain raced against layout in wry 0.54.
-    getViewportOf id
+    getViewportOf elementId
         |> Task.andThen
             (\_ ->
-                getViewportOf id
-                    |> Task.andThen (\info -> setViewportOf id 0 info.scene.height)
+                getViewportOf elementId
+                    |> Task.andThen (\info -> setViewportOf elementId 0 info.scene.height)
             )
         |> Task.attempt (\_ -> NoOp)
 
 
-insertLines : Int -> Terminal -> Terminal
-insertLines number terminal =
+
+-- COMPATIBILITY
+
+
+{-| The active screen as an editor model: one line of text per row and the
+cursor position, plus the scroll region (1 based, only when one is set).
+-}
+getBuffer : Terminal -> ( Editor.Msg.Model, Maybe ( Int, Int ) )
+getBuffer terminal =
     let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
+        screen =
+            Screen.activeScreen terminal
+
+        editor =
+            Editor.Lib.init False
+                "0"
+                ""
+                { vimMode = True
+                , showLineNumbers = False
+                , padBottom = False
+                , padRight = False
+                , showCursor = terminal.modes.cursorVisible
+                , characterWidth = terminal.characterWidth
+                }
+                Editor.initialPorts
 
         travelable =
             editor.travelable
 
-        { x, y } =
-            editor.travelable.cursorPosition
-
-        renderableLines =
-            editor.travelable.renderableLines
-
-        ( start, end ) =
-            Maybe.withDefault ( 1, terminal.size.height ) scrollRegion
-
-        nextTravelable =
-            -- Newline at start
-            let
-                ( head, _ ) =
-                    List.Extra.splitAt (start - 1) renderableLines
-
-                ( _, tail ) =
-                    List.Extra.splitAt end renderableLines
-
-                region =
-                    renderableLines
-                        |> Array.fromList
-                        |> Array.slice (start - 1) end
-                        |> Array.toList
-
-                nextRenderableLines =
-                    List.concat
-                        [ head
-                        , List.repeat number (Editor.Lib.createRenderableLine 0 "")
-                            ++ (region
-                                    |> List.reverse
-                                    |> List.tail
-                                    |> Maybe.withDefault region
-                                    |> List.reverse
-                               )
-                        , tail
-                        ]
-            in
-            { travelable | renderableLines = nextRenderableLines }
-
-        nextEditor =
-            { editor | travelable = nextTravelable }
-    in
-    updateTerminalEditor nextEditor terminal
-
-
-deleteLines : Int -> Terminal -> Terminal
-deleteLines number terminal =
-    let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
-
-        travelable =
-            editor.travelable
-
-        { x, y } =
-            editor.travelable.cursorPosition
-
-        renderableLines =
-            editor.travelable.renderableLines
-
-        ( start, end ) =
-            Maybe.withDefault ( 1, terminal.size.height + 1 ) scrollRegion
-
-        nextTravelable =
-            let
-                ( head, _ ) =
-                    List.Extra.splitAt (start - 1) renderableLines
-
-                ( _, tail ) =
-                    List.Extra.splitAt end renderableLines
-
-                region =
-                    renderableLines
-                        |> Array.fromList
-                        |> Array.slice (start - 1) end
-                        |> Array.toList
-
-                nextRenderableLines =
-                    List.concat
-                        [ head
-                        , region
-                            ++ List.repeat number (Editor.Lib.createRenderableLine 0 (String.repeat terminal.size.width " "))
-                            |> Array.fromList
-                            |> Array.slice number (List.length region + number)
-                            |> Array.toList
-                        , tail
-                        ]
-            in
-            { travelable | renderableLines = nextRenderableLines }
-
-        nextEditor =
-            { editor | travelable = nextTravelable }
-    in
-    updateTerminalEditor nextEditor terminal
-
-
-newLine : TerminalSize -> Terminal -> Terminal
-newLine { height } terminal =
-    let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
-
-        travelable =
-            editor.travelable
-
-        { x, y } =
-            editor.travelable.cursorPosition
-
-        renderableLines =
-            editor.travelable.renderableLines
-
-        ( start, end ) =
-            Maybe.withDefault ( 1, height ) scrollRegion
-
-        -- Alternate buffer has no scrollback, so handle it differently
-        nextScrollback =
-            case terminal.activeBuffer of
-                Alternate ->
-                    terminal.scrollback
-
-                Primary ->
-                    case y + 1 == end of
-                        True ->
-                            let
-                                scrollbackEditor =
-                                    terminal.scrollback
-
-                                addToScrollback =
-                                    List.head renderableLines
-                                        |> Maybe.map (\h -> [ h ])
-                                        |> Maybe.withDefault []
-
-                                scrollbackTravelable =
-                                    scrollbackEditor.travelable
-
-                                appended =
-                                    List.concat [ scrollbackTravelable.renderableLines, addToScrollback ]
-
-                                cappedLines =
-                                    let
-                                        excess =
-                                            List.length appended - maxScrollbackLines
-                                    in
-                                    if excess > 0 then
-                                        List.drop excess appended
-
-                                    else
-                                        appended
-                            in
-                            { scrollbackEditor | travelable = { scrollbackTravelable | renderableLines = cappedLines } }
-
-                        _ ->
-                            terminal.scrollback
-
-        nextTravelable =
-            if y + 1 == end then
-                -- Newline at end
-                let
-                    ( head, _ ) =
-                        List.Extra.splitAt (start - 1) renderableLines
-
-                    ( _, tail ) =
-                        List.Extra.splitAt end renderableLines
-
-                    region =
-                        renderableLines
-                            |> Array.fromList
-                            |> Array.slice (start - 1) end
-                            |> Array.toList
-
-                    nextRenderableLines =
-                        List.concat
-                            [ head
-                            , (region
-                                |> List.tail
-                                |> Maybe.withDefault region
-                              )
-                                ++ [ Editor.Lib.createRenderableLine 0 (String.repeat terminal.size.width " ") ]
-                            , tail
-                            ]
-                in
-                { travelable | cursorPosition = { x = x, y = min (height - 1) (y + 1) }, renderableLines = nextRenderableLines }
-
-            else if y + 1 == start && start /= 1 && end /= height then
-                -- Newline at start
-                let
-                    ( head, _ ) =
-                        List.Extra.splitAt (start - 1) renderableLines
-
-                    ( _, tail ) =
-                        List.Extra.splitAt end renderableLines
-
-                    region =
-                        renderableLines
-                            |> Array.fromList
-                            |> Array.slice (start - 1) end
-                            |> Array.toList
-
-                    nextRenderableLines =
-                        List.concat
-                            [ head
-                            , [ Editor.Lib.createRenderableLine 0 (String.repeat terminal.size.width " ") ]
-                                ++ (region
-                                        |> List.reverse
-                                        |> List.tail
-                                        |> Maybe.withDefault region
-                                        |> List.reverse
-                                   )
-                            , tail
-                            ]
-                in
-                { travelable | cursorPosition = { x = x, y = min (height - 1) (y + 1) }, renderableLines = nextRenderableLines }
+        scrollRegion =
+            if screen.scrollTop == 0 && screen.scrollBottom == terminal.size.height - 1 then
+                Nothing
 
             else
-                { travelable | cursorPosition = { x = x, y = y + 1 }, renderableLines = renderableLines }
-
-        nextEditor =
-            { editor | travelable = nextTravelable }
-
-        nextTerminal =
-            updateTerminalEditor nextEditor terminal
+                Just ( screen.scrollTop + 1, screen.scrollBottom + 1 )
     in
-    { nextTerminal | scrollback = nextScrollback }
+    ( { editor
+        | travelable =
+            { travelable
+                | renderableLines = List.indexedMap Editor.Lib.createRenderableLine (Screen.screenText terminal)
+                , cursorPosition = screen.cursor
+            }
+      }
+    , scrollRegion
+    )
 
 
-index : TerminalSize -> Terminal -> Terminal
-index { height } terminal =
+
+-- VIEW
+
+
+lineHeight : Int
+lineHeight =
+    24
+
+
+view : Model -> Html Msg
+view model =
     let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
-
-        travelable =
-            editor.travelable
-
-        { x, y } =
-            editor.travelable.cursorPosition
-
-        renderableLines =
-            editor.travelable.renderableLines
-
-        nextTravelable =
-            { travelable | cursorPosition = { x = x, y = min terminal.size.height (y + 1) }, renderableLines = renderableLines }
-
-        nextEditor =
-            { editor | travelable = nextTravelable }
+        terminal =
+            model.terminal
     in
-    updateTerminalEditor nextEditor terminal
+    div [ class "w-full h-full overflow-hidden", style "width" "100%", style "height" "100%", style "overflow" "hidden" ]
+        [ Html.node "style" [] [ text stylesheet ]
+        , div
+            [ id "terminal-container"
+            , class "w-full h-full overflow-y-scroll p-1 terminal"
+            ]
+            [ span [ id "character-width", class "terminal-measure" ] [ text "0" ]
+            , case terminal.activeBuffer of
+                Primary ->
+                    Html.Lazy.lazy2 viewScrollback terminal.size.width terminal.scrollback
+
+                Alternate ->
+                    text ""
+            , viewScreen terminal
+            ]
+        ]
 
 
-
--- TODO:
-{--
-    /// Reverse Index.
-    ///
-    /// Move the active position to the same horizontal position on the
-    /// preceding line. If the active position is at the top margin, a scroll
-    /// down is performed.
---}
+{-| Built once: the view hands the very same string to the virtual DOM on
+every frame, so there is nothing to compare.
+-}
+stylesheet : String
+stylesheet =
+    Editor.Styles.editorPseudoStyles ++ styles ++ Terminal.BoxDrawing.styles
 
 
-reverseIndex : TerminalSize -> Terminal -> Terminal
-reverseIndex { height } terminal =
-    let
-        ( editor, scrollRegion ) =
-            getBuffer terminal
+styles : String
+styles =
+    """
+    .terminal {
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+        padding: 4px;
+        overflow-x: hidden;
+        overflow-y: scroll;
+        position: relative;
+        font-family: "JetBrainsMono Nerd Font Mono", Monaco, monospace;
+        font-size: var(--font-size);
+        line-height: var(--line-height);
+        font-variant-ligatures: none;
+        color: var(--text-color);
+        background: var(--background-color);
+        cursor: text;
+        user-select: text;
+        -webkit-user-select: text;
+    }
 
-        travelable =
-            editor.travelable
+    .terminal-measure {
+        position: absolute;
+        left: -500px;
+        visibility: hidden;
+    }
 
-        { x, y } =
-            editor.travelable.cursorPosition
+    .terminal-screen {
+        position: relative;
+    }
 
-        renderableLines =
-            editor.travelable.renderableLines
-    in
-    case y == 0 of
-        True ->
-            -- Newline at end
-            let
-                ( start, end ) =
-                    Maybe.withDefault ( 1, height ) scrollRegion
+    .terminal-row {
+        height: var(--line-height);
+        white-space: pre;
+        overflow: hidden;
+    }
 
-                ( head, _ ) =
-                    List.Extra.splitAt (start - 1) renderableLines
+    .terminal-scrollback .terminal-row {
+        height: auto;
+        min-height: var(--line-height);
+        white-space: break-spaces;
+        word-break: break-all;
+        line-break: anywhere;
+    }
 
-                ( _, tail ) =
-                    List.Extra.splitAt end renderableLines
+    /* Powerline separators come from the font and are stretched to the full
+       height of the row. --terminal-box-stretch is the row height divided by
+       the height the font draws a full-height glyph at; the application can
+       measure and set it. (Box drawing and block elements are drawn by the
+       terminal itself, see Terminal.BoxDrawing.) */
+    .terminal-row .box {
+        display: inline-block;
+        transform: scaleY(var(--terminal-box-stretch, 1.3));
+    }
 
-                region =
-                    renderableLines
-                        |> Array.fromList
-                        |> Array.slice (start - 1) end
-                        |> Array.toList
+    /* A character that is not plain ASCII gets a cell of its own, so a glyph
+       from a fallback font cannot push the rest of the line off the grid. */
+    .terminal-row .w1, .terminal-row .w2 {
+        display: inline-block;
+        height: var(--line-height);
+        vertical-align: top;
+        overflow: visible;
+    }
 
-                nextRenderableLines =
-                    List.concat
-                        [ head
-                        , (region
-                            |> List.tail
-                            |> Maybe.withDefault region
-                          )
-                            ++ [ Editor.Lib.createRenderableLine 0 (String.repeat terminal.size.width " ") ]
-                        , tail
-                        ]
+    /* --terminal-cell-width is the measured width of a character, set by the
+       application (see terminal/js/dom.js); 1ch is close enough without it */
+    .terminal-row .w1 { width: var(--terminal-cell-width, 1ch); }
+    .terminal-row .w2 { width: calc(2 * var(--terminal-cell-width, 1ch)); }
 
-                nextTravelable =
-                    { travelable | cursorPosition = { x = x, y = max 0 (y - 1) }, renderableLines = nextRenderableLines }
+    .terminal-cursor {
+        position: absolute;
+        height: var(--line-height);
+        box-sizing: border-box;
+        pointer-events: none;
+    }
 
-                nextEditor =
-                    { editor | travelable = nextTravelable }
-            in
-            updateTerminalEditor nextEditor terminal
+    .terminal-cursor.block { background: var(--cursor-color); }
+    .terminal-cursor.block.unfocused { background: transparent; border: 1px solid var(--cursor-color); }
+    .terminal-cursor.underline { border-bottom: 2px solid var(--text-color); }
+    .terminal-cursor.bar { border-left: 2px solid var(--text-color); }
 
-        False ->
-            let
-                nextTravelable =
-                    { travelable | cursorPosition = { x = x, y = max 0 (y - 1) }, renderableLines = renderableLines }
-
-                nextEditor =
-                    { editor | travelable = nextTravelable }
-            in
-            updateTerminalEditor nextEditor terminal
+    /* Links open with Command+click (see terminal/js/dom.js) */
+    body.terminal-links-active .terminal [data-href] { cursor: pointer; }
+    """
 
 
-setStyle : Editor.Msg.RenderableLine -> Int -> Int -> Dict String String -> List MultilineSymbol
-setStyle renderableLine start end styles =
-    List.foldl
-        (\i acc ->
-            Dict.insert i
-                { kind = 1000
-                , start = i
-                , end = Just (i + 1)
-                , styles = Dict.toList styles
-                }
-                acc
+{-| Scrollback lines are whole lines; the browser wraps them at the width of
+the screen, so they follow the window when it is resized. (The extra pixel
+keeps a line of exactly that many columns from wrapping early.)
+-}
+viewScrollback : Int -> Scrollback -> Html Msg
+viewScrollback width scrollback =
+    Html.Keyed.node "div"
+        [ class "terminal-scrollback"
+        , style "width" ("calc(" ++ String.fromInt width ++ " * var(--terminal-cell-width, 1ch) + 1px)")
+        ]
+        ((scrollback.current :: scrollback.blocks)
+            |> List.reverse
+            |> List.map (\block -> ( String.fromInt block.id, Html.Lazy.lazy viewScrollbackBlock block ))
         )
-        (Dict.fromList (List.foldl (\s acc -> ( s.start, s ) :: acc) [] renderableLine.multilineSymbols))
-        (List.range start (end - 1))
-        |> Dict.values
 
 
-getAnsiStyleBold : Int -> List ( String, String )
-getAnsiStyleBold number =
-    [ ( "color", getAnsiColor number ), ( "font-weight", "bold" ) ]
+viewScrollbackBlock : ScrollbackBlock -> Html Msg
+viewScrollbackBlock block =
+    div []
+        (List.foldl
+            (\line rows -> viewRow False line.wrapped (List.concatMap breakable line.spans) :: rows)
+            []
+            block.lines
+        )
 
 
-setAnsiStyle : Int -> Dict String String -> Dict String String
-setAnsiStyle number styles =
-    -- SGR parameters: https://en.wikipedia.org/wiki/ANSI_escape_code
-    if number == 0 then
-        styles
-            |> Dict.insert "color" ""
-            |> Dict.insert "background" ""
-            |> Dict.insert "text-decoration" "none"
-            |> Dict.insert "font-weight" "normal"
-
-    else if 30 <= number && number <= 37 || 90 <= number && number <= 97 then
-        styles |> Dict.insert "color" (getAnsiColor number) |> Dict.insert "font-weight" "normal"
-
-    else if number == 39 then
-        styles |> Dict.insert "color" ""
-
-    else if number == 49 then
-        styles |> Dict.insert "background" ""
+{-| A run of stretched characters is one box that cannot be broken. In the
+scrollback, where the browser wraps lines, each gets a box of its own.
+-}
+breakable : Span -> List Span
+breakable spanData =
+    if spanData.stretch && not spanData.fixed && spanData.columns > 1 then
+        String.toList spanData.text
+            |> List.map (\char -> { spanData | text = String.fromChar char, columns = 1 })
 
     else
-        styles |> Dict.insert "background" (getAnsiColor number) |> Dict.insert "font-weight" "normal"
+        [ spanData ]
 
 
-getAnsiColor : Int -> String
-getAnsiColor number =
-    case number of
-        30 ->
-            "black"
-
-        40 ->
-            "black"
-
-        31 ->
-            -- red
-            "rgb(194,54,33)"
-
-        41 ->
-            -- red
-            "rgb(194,54,33)"
-
-        32 ->
-            -- green
-            "rgb(37,188,36)"
-
-        42 ->
-            -- green
-            "rgb(37,188,36)"
-
-        33 ->
-            -- yellow
-            "rgb(173,173,39)"
-
-        43 ->
-            -- yellow
-            "rgb(173,173,39)"
-
-        34 ->
-            -- blue
-            "rgb(73,46,225)"
-
-        44 ->
-            -- blue
-            "rgb(73,46,225)"
-
-        35 ->
-            -- magenta
-            "rgb(211,56,211)"
-
-        45 ->
-            -- magenta
-            "rgb(211,56,211)"
-
-        36 ->
-            -- cyan
-            "rgb(51,187,200)"
-
-        46 ->
-            -- cyan
-            "rgb(51,187,200)"
-
-        37 ->
-            -- white
-            "rgb(203,204,205)"
-
-        47 ->
-            -- white
-            "rgb(203,204,205)"
-
-        90 ->
-            -- bright black
-            "rgb(129,131,131)"
-
-        100 ->
-            -- bright black
-            "rgb(129,131,131)"
-
-        91 ->
-            -- bright red
-            "rbg(252,57,31)"
-
-        101 ->
-            -- bright red
-            "rbg(252,57,31)"
-
-        92 ->
-            -- bright green
-            "rgb(49,231,34)"
-
-        102 ->
-            -- bright green
-            "rgb(49,231,34)"
-
-        93 ->
-            -- bright yellow
-            "rgb(234,236,35)"
-
-        103 ->
-            -- bright yellow
-            "rgb(234,236,35)"
-
-        94 ->
-            -- bright blue
-            "rgb(88,51,255)"
-
-        104 ->
-            -- bright blue
-            "rgb(88,51,255)"
-
-        95 ->
-            -- bright magenta
-            "rgb(249,53,248)"
-
-        105 ->
-            -- bright magenta
-            "rgb(249,53,248)"
-
-        96 ->
-            -- bright cyan
-            "rgb(20,240,240)"
-
-        106 ->
-            -- bright cyan
-            "rgb(20,240,240)"
-
-        97 ->
-            -- bright white
-            "rgb(233,235,235)"
-
-        107 ->
-            -- bright white
-            "rgb(233,235,235)"
-
-        _ ->
-            ""
-
-
-deleteCharacters : Int -> Int -> String -> String
-deleteCharacters x n text =
+viewScreen : Terminal -> Html Msg
+viewScreen terminal =
     let
-        start =
-            String.slice 0 x text
+        screen =
+            Screen.activeScreen terminal
 
-        end =
-            String.slice (x + n) (String.length text) text
+        reverseVideo =
+            terminal.modes.reverseVideo
     in
-    String.padRight n ' ' (start ++ end)
-
-
-eraseLineFromStartToCursor : Int -> Int -> Int -> List Editor.Msg.RenderableLine -> List Editor.Msg.RenderableLine
-eraseLineFromStartToCursor width x y renderableLines =
-    List.Extra.updateAt y
-        (\renderableLine ->
-            { renderableLine | text = String.repeat x " " ++ String.slice x width renderableLine.text }
+    div
+        ([ id "terminal"
+         , class "terminal-screen"
+         , style "height" (String.fromInt (terminal.size.height * lineHeight) ++ "px")
+         ]
+            ++ mouseEvents terminal
         )
-        renderableLines
-
-
-eraseLineFromCursorToEnd : Int -> Int -> Int -> List Editor.Msg.RenderableLine -> List Editor.Msg.RenderableLine
-eraseLineFromCursorToEnd width x y renderableLines =
-    List.Extra.updateAt y
-        (\renderableLine ->
-            { renderableLine | text = String.slice 0 x renderableLine.text ++ String.repeat (width - x) " " }
+        (Array.foldr
+            (\line rows -> Html.Lazy.lazy2 viewLine reverseVideo line :: rows)
+            [ viewCursor terminal ]
+            screen.lines
         )
-        renderableLines
+
+
+viewLine : Bool -> Line -> Html Msg
+viewLine reverseVideo line =
+    viewRow reverseVideo line.wrapped (Screen.lineSpans line)
+
+
+{-| `data-wrapped` marks a row that continues on the next row, so copying
+text can join it back into one line.
+-}
+viewRow : Bool -> Bool -> List Span -> Html Msg
+viewRow reverseVideo wrapped spans =
+    div
+        (if wrapped then
+            [ class "terminal-row", attribute "data-wrapped" "true" ]
+
+         else
+            [ class "terminal-row" ]
+        )
+        (List.map (viewSpan reverseVideo) spans)
+
+
+viewSpan : Bool -> Span -> Html Msg
+viewSpan reverseVideo spanData =
+    let
+        cellClass =
+            if not spanData.fixed then
+                if spanData.stretch then
+                    [ class "box" ]
+
+                else
+                    []
+
+            else if spanData.columns == 2 then
+                [ class "w2" ]
+
+            else if spanData.stretch then
+                [ class "w1 box" ]
+
+            else
+                case String.uncons spanData.text of
+                    Just ( char, "" ) ->
+                        if Terminal.BoxDrawing.isDrawn (Char.toCode char) then
+                            -- lines and blocks the terminal draws itself
+                            [ class ("w1 " ++ Terminal.BoxDrawing.className (Char.toCode char)) ]
+
+                        else
+                            [ class "w1" ]
+
+                    _ ->
+                        [ class "w1" ]
+    in
+    span (cellClass ++ styleAttributes reverseVideo spanData.style) [ text spanData.text ]
+
+
+styleAttributes : Bool -> Style -> List (Html.Attribute Msg)
+styleAttributes reverseVideo cellStyle =
+    if cellStyle == Screen.defaultStyle && not reverseVideo then
+        []
+
+    else
+        let
+            has attribute =
+                Screen.hasAttribute attribute cellStyle
+
+            inverse =
+                has Screen.attributeInverse /= reverseVideo
+
+            foreground =
+                Terminal.Color.toCss cellStyle.foreground
+
+            background =
+                Terminal.Color.toCss cellStyle.background
+
+            ( color, backgroundColor ) =
+                if inverse then
+                    ( Just (Maybe.withDefault "var(--background-color)" background)
+                    , Just (Maybe.withDefault "var(--text-color)" foreground)
+                    )
+
+                else
+                    ( foreground, background )
+
+            decorations =
+                List.filterMap identity
+                    [ if has Screen.attributeUnderline || has Screen.attributeDoubleUnderline || cellStyle.link /= "" then
+                        Just "underline"
+
+                      else
+                        Nothing
+                    , if has Screen.attributeStrike then
+                        Just "line-through"
+
+                      else
+                        Nothing
+                    , if has Screen.attributeOverline then
+                        Just "overline"
+
+                      else
+                        Nothing
+                    ]
+
+            optional condition attributes =
+                if condition then
+                    attributes
+
+                else
+                    []
+        in
+        List.concat
+            [ if has Screen.attributeInvisible then
+                [ style "color" "transparent" ]
+
+              else
+                case color of
+                    Just value ->
+                        [ style "color" value ]
+
+                    Nothing ->
+                        []
+            , case backgroundColor of
+                Just value ->
+                    [ style "background" value ]
+
+                Nothing ->
+                    []
+            , optional (has Screen.attributeBold) [ style "font-weight" "bold" ]
+            , optional (has Screen.attributeDim) [ style "opacity" "0.6" ]
+            , optional (has Screen.attributeItalic) [ style "font-style" "italic" ]
+            , optional (not (List.isEmpty decorations)) [ style "text-decoration" (String.join " " decorations) ]
+            , optional (has Screen.attributeDoubleUnderline) [ style "text-decoration-style" "double" ]
+            , optional (cellStyle.link /= "")
+                [ style "text-decoration-style" "dotted"
+                , attribute "data-href" cellStyle.link
+                , Html.Attributes.title cellStyle.link
+                ]
+            ]
+
+
+viewCursor : Terminal -> Html Msg
+viewCursor terminal =
+    let
+        screen =
+            Screen.activeScreen terminal
+
+        x =
+            clamp 0 (terminal.size.width - 1) screen.cursor.x
+
+        wide =
+            Array.get screen.cursor.y screen.lines
+                |> Maybe.andThen (\line -> Array.get x line.cells)
+                |> Maybe.map (\cell -> cell.width == 2)
+                |> Maybe.withDefault False
+
+        shape =
+            case terminal.cursorShape of
+                CursorBlock ->
+                    "block"
+
+                CursorUnderline ->
+                    "underline"
+
+                CursorBar ->
+                    "bar"
+    in
+    if terminal.modes.cursorVisible then
+        span
+            [ class
+                ("terminal-cursor cursor "
+                    ++ shape
+                    ++ (if terminal.focused then
+                            ""
+
+                        else
+                            " unfocused"
+                       )
+                )
+            , style "left" ("calc(" ++ String.fromInt x ++ " * var(--terminal-cell-width, 1ch))")
+            , style "top" (String.fromInt (screen.cursor.y * lineHeight) ++ "px")
+            , style "width"
+                (if wide then
+                    "calc(2 * var(--terminal-cell-width, 1ch))"
+
+                 else
+                    "var(--terminal-cell-width, 1ch)"
+                )
+            ]
+            []
+
+    else
+        text ""
+
+
+
+-- MOUSE
+
+
+{-| Mouse events are only listened to when the program asked for them, so
+selecting text with the mouse keeps working everywhere else. The wheel is
+taken over on the alternate screen, where there is no scrollback to scroll.
+-}
+mouseEvents : Terminal -> List (Html.Attribute Msg)
+mouseEvents terminal =
+    let
+        tracking =
+            terminal.modes.mouseTracking /= MouseOff
+
+        on name action =
+            Html.Events.custom name
+                (mouseDecoder action
+                    |> Decode.map
+                        (\event ->
+                            { message = ReceivedMouse event
+                            , stopPropagation = False
+                            , preventDefault = not (event.shiftKey || event.metaKey)
+                            }
+                        )
+                )
+
+        wheel =
+            Html.Events.custom "wheel"
+                (Decode.field "deltaY" Decode.float
+                    |> Decode.andThen (\delta -> mouseDecoder (MouseWheel delta))
+                    |> Decode.map
+                        (\event ->
+                            { message = ReceivedMouse event
+                            , stopPropagation = False
+                            , preventDefault = True
+                            }
+                        )
+                )
+    in
+    List.concat
+        [ if tracking then
+            [ on "mousedown" MousePress
+            , on "mouseup" MouseRelease
+            , on "mousemove" MouseMove
+            , on "contextmenu" MouseMove
+            ]
+
+          else
+            []
+        , if tracking || (terminal.activeBuffer == Alternate && terminal.modes.alternateScroll) then
+            [ wheel ]
+
+          else
+            []
+        ]
+
+
+{-| The position is relative to the screen element: rows and cells are not
+positioned, so their offset parent is the (relatively positioned) screen.
+-}
+mouseDecoder : MouseAction -> Decoder MouseEvent
+mouseDecoder action =
+    Decode.map8
+        (\offsetX offsetY left top button buttons ( shiftKey, metaKey ) ( altKey, ctrlKey ) ->
+            { action = action
+            , x = left + offsetX
+            , y = top + offsetY
+            , button = button
+            , buttons = buttons
+            , shiftKey = shiftKey
+            , altKey = altKey
+            , ctrlKey = ctrlKey
+            , metaKey = metaKey
+            }
+        )
+        (Decode.field "offsetX" Decode.float)
+        (Decode.field "offsetY" Decode.float)
+        (Decode.at [ "target", "offsetLeft" ] Decode.float)
+        (Decode.at [ "target", "offsetTop" ] Decode.float)
+        (Decode.field "button" Decode.int)
+        (Decode.field "buttons" Decode.int)
+        (Decode.map2 Tuple.pair
+            (Decode.field "shiftKey" Decode.bool)
+            (Decode.field "metaKey" Decode.bool)
+        )
+        (Decode.map2 Tuple.pair
+            (Decode.field "altKey" Decode.bool)
+            (Decode.field "ctrlKey" Decode.bool)
+        )

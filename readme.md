@@ -83,7 +83,9 @@ Tests:
 ```bash
 cd editor && npm test                              # Elm editor library
 cd terminal-test && npx elm-test                   # Elm terminal library
+cd terminal-test && npm run e2e                    # terminal vs xterm.js (see terminal-test/readme.md)
 cd terminal-server && cargo test                   # Rust terminal-server lib
+cd editor-pro && npx elm-test                      # Elm tests of the editor app
 cd editor-pro/src-tauri/src/filetree && cargo test # Rust filetree lib
 cd preflight && cargo test                         # Rust preflight lib
 ```
