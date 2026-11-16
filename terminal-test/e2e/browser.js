@@ -3,9 +3,10 @@
 // terminal-pro's built frontend (its JavaScript, the Elm terminal, the CSS) is
 // loaded in headless WebKit, the engine Tauri uses on macOS. Only the Tauri
 // IPC is replaced: events go to `terminal-headless pty --acks`, so a real
-// shell runs in a real PTY and its output is held back until the page has
-// acknowledged what it was sent, exactly as in the app. Plugin calls
-// (clipboard, opener, window) are recorded.
+// shell runs in a real PTY, and the page asks for its output batch by batch
+// (`next_output`), which is also what holds output back until the page has
+// dealt with what it has, exactly as in the app. Plugin calls (clipboard,
+// opener, window) are recorded.
 // What is tested here is what only exists in the browser: where a click
 // lands, what gets copied, how the rows are laid out.
 //
@@ -25,6 +26,8 @@ async function open(viewport = { width: 900, height: 560 }) {
   const browser = await webkit.launch()
   const page = await browser.newPage({ viewport })
   const ptys = {}
+  const outputs = {}
+  let acknowledgements = 0
   const emitted = []
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
@@ -33,7 +36,11 @@ async function open(viewport = { width: 900, height: 560 }) {
     emitted.push([event, payload])
     if (event === 'openTerminal') {
       const child = spawn(HEADLESS, ['pty', os.tmpdir(), '--acks'], { stdio: ['pipe', 'pipe', 'inherit'] })
+      // a shell that has exited does not take what is written to it; that is not an error here
+      child.stdin.on('error', () => {})
       ptys[payload.terminalId] = child
+      const output = outputs[payload.terminalId] = { batches: [], waiting: [], closed: false }
+      const wake = () => output.waiting.splice(0).forEach(resolve => resolve())
       let pending = ''
       child.stdout.on('data', data => {
         pending += data.toString()
@@ -41,11 +48,11 @@ async function open(viewport = { width: 900, height: 560 }) {
         while ((newline = pending.indexOf('\n')) >= 0) {
           const line = pending.slice(0, newline)
           pending = pending.slice(newline + 1)
-          if (!line) continue
-          const { sequence, commands } = JSON.parse(line)
-          page.evaluate(([id, sequence, data]) => window.__dispatch('output', { terminalId: id, sequence, data }), [payload.terminalId, sequence, commands]).catch(() => {})
+          if (line) output.batches.push(JSON.parse(line))
         }
+        wake()
       })
+      child.on('exit', () => { output.closed = true; wake() })
     } else if (event === 'run' && ptys[payload.terminalId]) {
       ptys[payload.terminalId].stdin.write(JSON.stringify({ run: payload.contents }) + '\n')
     } else if (event === 'resize' && ptys[payload.terminalId]) {
@@ -56,9 +63,22 @@ async function open(viewport = { width: 900, height: 560 }) {
     }
   })
 
-  // the page has taken a batch: only now may the backend send more
-  await page.exposeFunction('__acknowledged', ({ terminalId, sequence }) => {
-    if (ptys[terminalId] && !ptys[terminalId].killed) ptys[terminalId].stdin.write(JSON.stringify({ ack: sequence }) + '\n')
+  // The page asks for a terminal's next batch and says which one it has
+  // taken: what the apps' `next_output` command does.
+  await page.exposeFunction('__nextOutput', async ({ terminalId, acknowledged }) => {
+    const output = outputs[terminalId]
+    const child = ptys[terminalId]
+    if (!output) return { state: 'unknown' }
+    acknowledgements++
+    if (child.exitCode === null && child.stdin.writable) child.stdin.write(JSON.stringify({ ack: acknowledged }) + '\n')
+    if (!output.batches.length && !output.closed) {
+      await Promise.race([new Promise(resolve => output.waiting.push(resolve)), sleep(2000)])
+    }
+    if (output.batches.length) {
+      const { sequence, commands } = output.batches.shift()
+      return { state: 'output', sequence, data: commands }
+    }
+    return { state: output.closed ? 'closed' : 'waiting' }
   })
 
   await page.addInitScript(() => {
@@ -75,7 +95,7 @@ async function open(viewport = { width: 900, height: 560 }) {
       async invoke(command, args) {
         if (command === 'plugin:event|listen') { listeners[args.event] = args.handler; return args.handler }
         if (command === 'plugin:event|emit') { window.__emitted(args.event, args.payload); return null }
-        if (command === 'acknowledge_output') { window.__acknowledgements = (window.__acknowledgements || 0) + 1; window.__acknowledged(args); return null }
+        if (command === 'next_output') return window.__nextOutput(args)
         window.__invoked.push([command, args])
         if (command === 'preflight') return { all_ok: true, results: [] }
         if (command === 'plugin:clipboard-manager|read_text') return window.__clipboard || ''
@@ -94,6 +114,8 @@ async function open(viewport = { width: 900, height: 560 }) {
   const terminal = {
     page,
     emitted,
+    // how often the page has asked for output (each time acknowledging what it had)
+    asked: () => acknowledgements,
     errors,
     rows: () => page.evaluate(() => [...document.querySelectorAll('#terminal .terminal-row')].map(row => row.innerText)),
     invoked: command => page.evaluate(command => window.__invoked.filter(call => call[0] === command).map(call => call[1]), command),
@@ -305,8 +327,8 @@ const tests = {
     // minute), and Ctrl+C sat behind that pile for minutes.
     await t.command('yes')
     await sleep(2500)
-    const acknowledged = await t.page.evaluate(() => window.__acknowledgements || 0)
-    ok(acknowledged > 5, `the page acknowledged ${acknowledged} batches of output while it was flooded`)
+    const asked = t.asked()
+    ok(asked > 5, `the page asked for output ${asked} times while it was flooded`)
 
     const pressed = Date.now()
     await t.page.keyboard.press('Control+c')

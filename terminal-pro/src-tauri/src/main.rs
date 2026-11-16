@@ -10,7 +10,7 @@ use std::{
   thread,
 };
 use tauri::{Emitter, Listener, Manager, WebviewWindow};
-use terminal::terminal::{Batch, Flow, Size};
+use terminal::terminal::{Batch, Next, Output, Size};
 
 fn nerd_font_probe() -> ProbeOutcome {
   preflight::probe_font("NerdFontMono")
@@ -74,18 +74,30 @@ where
   });
 }
 
-/// The output flow of every open terminal, by terminal id. Kept apart from
-/// the terminals themselves so that acknowledging output never waits on
-/// anything else the app is doing.
-type Flows = Arc<Mutex<HashMap<String, Flow>>>;
+/// The output of every open terminal, by terminal id, waiting for the page
+/// to ask for it. Kept apart from the terminals themselves so that handing
+/// out output never waits on anything else the app is doing.
+type Outputs = Arc<Mutex<HashMap<String, Arc<Output>>>>;
 
-/// The page has taken a batch of a terminal's output. Until it says so, no
-/// more than a couple of batches are sent: a program that prints faster than
-/// the page can draw is slowed down instead of filling memory.
-#[tauri::command]
-fn acknowledge_output(terminal_id: String, sequence: u64, flows: tauri::State<Flows>) {
-  if let Some(flow) = locked(&flows).get(&terminal_id) {
-    flow.acknowledge(sequence);
+/// How long a request for output waits when nothing is being printed,
+/// before it is answered with "nothing yet" and asked again. (A request
+/// that stays open for a minute is given up by the web view.)
+const OUTPUT_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The page asks for a terminal's next batch of output, and says which one
+/// it has taken. See `terminal::terminal::Output` for why it asks instead
+/// of being sent it.
+#[tauri::command(async)]
+fn next_output(terminal_id: String, acknowledged: u64, outputs: tauri::State<Outputs>) -> Value {
+  let output = locked(&outputs).get(&terminal_id).cloned();
+  match output {
+    // not opened yet, or closed
+    None => serde_json::json!({ "state": "unknown" }),
+    Some(output) => match output.next(acknowledged, OUTPUT_WAIT) {
+      Next::Batch(batch) => serde_json::json!({ "state": "output", "sequence": batch.sequence, "data": batch.commands }),
+      Next::Nothing => serde_json::json!({ "state": "waiting" }),
+      Next::Closed => serde_json::json!({ "state": "closed" }),
+    },
   }
 }
 
@@ -96,8 +108,8 @@ fn main() {
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_notification::init())
-    .manage(Flows::default())
-    .invoke_handler(tauri::generate_handler![preflight, bell, acknowledge_output])
+    .manage(Outputs::default())
+    .invoke_handler(tauri::generate_handler![preflight, bell, next_output])
     .setup(|app| {
       let window = app.get_webview_window("main").unwrap();
       let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
@@ -105,17 +117,17 @@ fn main() {
       // Listeners must be live before Elm's first `requestOpenTerminal`
       // fires at init time. Registering here (not on frontend-ready)
       // guarantees the event isn't lost if JS races ahead.
-      let flows = app.state::<Flows>().inner().clone();
-      bootstrap(window, terminals, flows, home);
+      let outputs = app.state::<Outputs>().inner().clone();
+      bootstrap(window, terminals, outputs, home);
       Ok(())
     })
     .run(tauri::generate_context!())
     .expect("failed to run app");
 }
 
-fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: String) {
-  let flows_for_open = flows.clone();
-  let flows_for_close = flows;
+fn bootstrap(window: WebviewWindow, terminals: Terminals, outputs: Outputs, home: String) {
+  let outputs_for_open = outputs.clone();
+  let outputs_for_close = outputs;
   let terminals_for_open = terminals.clone();
   let terminals_for_close = terminals.clone();
   let terminals_for_run = terminals.clone();
@@ -139,8 +151,9 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
       .filter(|s| !s.is_empty())
       .unwrap_or_else(|| home.clone());
 
-    if let Some((slot, flow)) = spawn_terminal(&window_for_open, terminal_id.clone(), cwd) {
-      locked(&flows_for_open).insert(terminal_id.clone(), flow);
+    let (slot, output) = spawn_terminal(&window_for_open, terminal_id.clone(), cwd);
+    locked(&outputs_for_open).insert(terminal_id.clone(), Arc::new(output));
+    if let Some(slot) = slot {
       locked(&terminals_for_open).insert(terminal_id, slot);
     }
   });
@@ -156,7 +169,7 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
       Some(s) => s.to_string(),
       None => return,
     };
-    locked(&flows_for_close).remove(&terminal_id);
+    locked(&outputs_for_close).remove(&terminal_id);
     if let Some(slot) = locked(&terminals_for_close).remove(&terminal_id) {
       slot.is_active.store(false, Ordering::Relaxed);
       // drop(slot) here closes kill_tx + channels
@@ -200,15 +213,14 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
   });
 }
 
-/// Spawn a PTY for the given terminal id. Output/resize events carry the
-/// id so Elm can route them to the matching tab.
+/// Spawn a PTY for the given terminal id. Its output waits to be asked for
+/// (`next_output`); resize events carry the id so Elm can route them to the
+/// matching tab.
 ///
-/// `None` when no shell could be started: the tab then says why, instead of
-/// the failure taking every other terminal down with it.
-fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String) -> Option<(TerminalSlot, Flow)> {
-  let window_terminal_output = window.clone();
+/// No slot when no shell could be started: the output then says why,
+/// instead of the failure taking every other terminal down with it.
+fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String) -> (Option<TerminalSlot>, Output) {
   let window_terminal_resize = window.clone();
-  let term_for_output = terminal_id.clone();
   let term_for_resize = terminal_id;
 
   let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Batch>();
@@ -216,41 +228,9 @@ fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String
 
   let terminal_api = match terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx) {
     Ok(api) => api,
-    Err(error) => {
-      let _ = window.emit(
-        "output",
-        serde_json::json!({
-          "terminalId": term_for_output,
-          "sequence": 0,
-          "data": terminal::terminal::start_failure_notice(&error),
-        }),
-      );
-      return None;
-    }
+    Err(error) => return (None, Output::of_failure(&error)),
   };
   let is_active = Arc::new(AtomicBool::new(true));
-
-  let is_active_for_output = is_active.clone();
-  let flow_for_output = terminal_api.flow.clone();
-  thread::spawn(move || {
-    for batch in terminal_output_rx {
-      let sent = is_active_for_output.load(Ordering::Relaxed)
-        && window_terminal_output
-          .emit(
-            "output",
-            serde_json::json!({
-              "terminalId": term_for_output,
-              "sequence": batch.sequence,
-              "data": batch.commands,
-            }),
-          )
-          .is_ok();
-      // Nobody will acknowledge what was not sent.
-      if !sent {
-        flow_for_output.acknowledge(batch.sequence);
-      }
-    }
-  });
 
   let is_active_for_resize = is_active.clone();
   thread::spawn(move || {
@@ -267,14 +247,14 @@ fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String
     }
   });
 
-  let flow = terminal_api.flow.clone();
-  Some((
-    TerminalSlot {
+  let output = Output::new(terminal_output_rx, terminal_api.flow.clone());
+  (
+    Some(TerminalSlot {
       run_tx: terminal_api.run_tx,
       resize_tx: terminal_api.resize_tx,
       is_active,
       _kill_tx: terminal_api.kill_tx,
-    },
-    flow,
-  ))
+    }),
+    output,
+  )
 }

@@ -124,6 +124,20 @@ eraseStyle terminal =
     { defaultStyle | background = terminal.pen.background }
 
 
+{-| A row for where the screen was erased or scrolled: untouched cells, in
+the current background color. With the default background (nearly always)
+it is the one row every such line shares, instead of a new row of cells for
+every line of output.
+-}
+erasedLine : Terminal -> Line
+erasedLine terminal =
+    if isDefaultColor terminal.pen.background then
+        terminal.blank
+
+    else
+        blankLine terminal.size.width (eraseStyle terminal)
+
+
 blankCell : Style -> Cell
 blankCell style =
     { char = " ", width = 1, style = style }
@@ -215,6 +229,7 @@ init size =
     , mouse = { cell = ( 0, 0 ), wheel = 0 }
     , exited = False
     , bells = 0
+    , blank = blankLine size.width defaultStyle
     }
 
 
@@ -354,18 +369,6 @@ are left out, unless the line continues on the next row.
 lineSpans : Line -> List Span
 lineSpans line =
     let
-        dropUnused cells =
-            case cells of
-                cell :: rest ->
-                    if cell == defaultBlankCell then
-                        dropUnused rest
-
-                    else
-                        cells
-
-                [] ->
-                    []
-
         addCell cell spans =
             if cell.width == 0 || isFiller cell then
                 spans
@@ -389,15 +392,67 @@ lineSpans line =
             else
                 { text = cell.char, columns = cell.width, style = cell.style, fixed = True, stretch = isStretched cell } :: spans
     in
-    Array.toList line.cells
-        |> List.reverse
-        |> (if line.wrapped then
-                identity
+    -- Every line that scrolls off the screen comes through here, so this is
+    -- written to make nothing it does not keep: the cells are walked in
+    -- place from the right, and the unused ones cost nothing. (Copying the
+    -- row to a list, reversing it and comparing every unused cell made
+    -- several kilobytes of garbage for each line of output.)
+    Array.foldr addCell
+        []
+        (if line.wrapped then
+            line.cells
+
+         else
+            Array.slice 0 (usedLength line.cells) line.cells
+        )
+
+
+{-| How many cells of a row are in use: up to and including the last one
+that is not an untouched blank.
+-}
+usedLength : Array Cell -> Int
+usedLength cells =
+    -- Both numbers of the walk (how far it is, and the answer so far) travel
+    -- in one Int, so that the walk allocates nothing.
+    Array.foldl
+        (\cell state ->
+            if isDefaultBlank cell then
+                state + 1
 
             else
-                dropUnused
-           )
-        |> List.foldl addCell []
+                (modBy usedLengthBase state + 1) * (usedLengthBase + 1)
+        )
+        0
+        cells
+        // usedLengthBase
+
+
+usedLengthBase : Int
+usedLengthBase =
+    1048576
+
+
+{-| An untouched cell. Written out field by field: `==` on two records
+allocates for every comparison.
+-}
+isDefaultBlank : Cell -> Bool
+isDefaultBlank cell =
+    (cell.width == 1)
+        && (cell.char == " ")
+        && (cell.style.attributes == 0)
+        && (cell.style.link == "")
+        && isDefaultColor cell.style.foreground
+        && isDefaultColor cell.style.background
+
+
+isDefaultColor : Color -> Bool
+isDefaultColor color =
+    case color of
+        DefaultColor ->
+            True
+
+        _ ->
+            False
 
 
 {-| The cells a list of spans was made from.
@@ -801,7 +856,7 @@ scrollUp count terminal =
             Array.length screen.lines
 
         blank =
-            blankLine terminal.size.width (eraseStyle terminal)
+            erasedLine terminal
 
         lines =
             if top == 0 && bottom == height - 1 && n == 1 then
@@ -854,7 +909,7 @@ insertLinesAt row count terminal =
             Array.length screen.lines
 
         blank =
-            blankLine terminal.size.width (eraseStyle terminal)
+            erasedLine terminal
 
         lines =
             Array.append
@@ -887,7 +942,7 @@ deleteLinesAt row count terminal =
             Array.length screen.lines
 
         blank =
-            blankLine terminal.size.width (eraseStyle terminal)
+            erasedLine terminal
 
         lines =
             Array.append
@@ -1260,7 +1315,7 @@ eraseInDisplay mode terminal =
             (activeScreen terminal).cursor.y
 
         blank =
-            blankLine terminal.size.width (eraseStyle terminal)
+            erasedLine terminal
 
         eraseLines keep =
             mapScreen
@@ -1474,7 +1529,7 @@ enterAlternateScreen terminal =
                 | activeBuffer = Alternate
                 , alternate =
                     { blank
-                        | lines = Array.repeat terminal.size.height (blankLine terminal.size.width (eraseStyle terminal))
+                        | lines = Array.repeat terminal.size.height (erasedLine terminal)
                         , cursor = terminal.primary.cursor
                         , saved = terminal.alternate.saved
                         , keyboardFlags = terminal.alternate.keyboardFlags
@@ -2987,6 +3042,7 @@ resize requested terminal =
     else
         { terminal
             | size = size
+            , blank = blankLine size.width defaultStyle
             , primary = primary
             , alternate = resizeAlternate size terminal.alternate
             , scrollback = scrollback

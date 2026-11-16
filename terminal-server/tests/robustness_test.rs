@@ -348,3 +348,100 @@ fn cursor_addressing_defaults() {
 fn form_feed_and_vertical_tab_are_line_feeds() {
     assert_eq!(parsed("a\x0bb\x0cc"), [text("a"), sequence("\n"), text("b"), sequence("\n"), text("c")]);
 }
+
+// ── What is sent to the screen ────────────────────────────────────────────
+
+use terminal::parse::{pack, INLINE_CONTROLS};
+
+/// What the screen does with a packed batch: text is cut at the control
+/// characters it carries, which become commands again.
+fn unpack(packed: &[TerminalCommand]) -> Vec<TerminalCommand> {
+    let mut commands = vec![];
+    for command in packed {
+        match command {
+            TerminalCommand::Text(text) => {
+                let mut run = String::new();
+                for c in text.chars() {
+                    let as_text = c.to_string();
+                    if INLINE_CONTROLS.contains(&as_text.as_str()) {
+                        if !run.is_empty() {
+                            commands.push(TerminalCommand::Text(std::mem::take(&mut run)));
+                        }
+                        commands.push(TerminalCommand::TerminalCommandSequence { command: as_text });
+                    } else {
+                        run.push(c);
+                    }
+                }
+                if !run.is_empty() {
+                    commands.push(TerminalCommand::Text(run));
+                }
+            }
+            other => commands.push(other.clone()),
+        }
+    }
+    commands
+}
+
+/// Text that the parser gave in pieces is one run after a round trip: for
+/// comparing, join neighbouring pieces of text.
+fn joined(commands: Vec<TerminalCommand>) -> Vec<TerminalCommand> {
+    let mut out: Vec<TerminalCommand> = vec![];
+    for command in commands {
+        match (out.last_mut(), command) {
+            (Some(TerminalCommand::Text(last)), TerminalCommand::Text(more)) => last.push_str(&more),
+            (_, command) => out.push(command),
+        }
+    }
+    out
+}
+
+#[test]
+fn packing_a_line_of_output_makes_it_one_string() {
+    let commands = Stream::new().feed("first line\r\nsecond\tline\r\n".as_bytes());
+    assert_eq!(pack(commands), vec![TerminalCommand::Text("first line\r\nsecond\tline\r\n".to_string())]);
+}
+
+#[test]
+fn packing_keeps_everything_else_where_it_was() {
+    let commands = Stream::new().feed("plain \x1b[1;31mred\x1b[0m\r\n\x1b[2Jafter".as_bytes());
+    let packed = pack(commands.clone());
+    assert_eq!(packed.len(), 7, "{:?}", packed);
+    assert_eq!(packed[0], TerminalCommand::Text("plain ".to_string()));
+    assert_eq!(packed[2], TerminalCommand::Text("red".to_string()));
+    assert_eq!(packed[4], TerminalCommand::Text("\r\n".to_string()));
+    assert_eq!(joined(unpack(&packed)), joined(commands));
+}
+
+#[test]
+fn packing_and_unpacking_gives_back_the_same_commands_for_any_output() {
+    // deterministic pseudo random output: text, control characters and escape sequences
+    let pieces = [
+        "text", " ", "\r", "\n", "\t", "\u{8}", "\u{7}", "\x1b[m", "\x1b[1;32m", "\x1b[2K", "\x1b[10;20H", "\x1b]0;title\x07",
+        "é✓", "\x1b[?25l", "\u{b}", "x",
+    ];
+    let mut seed: u64 = 0x2545F4914F6CDD1D;
+    for _ in 0..300 {
+        let mut output = String::new();
+        for _ in 0..40 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            output.push_str(pieces[(seed % pieces.len() as u64) as usize]);
+        }
+        let commands = Stream::new().feed(output.as_bytes());
+        let packed = pack(commands.clone());
+        assert_eq!(joined(unpack(&packed)), joined(commands), "for {:?}", output);
+        assert!(packed.len() <= joined(Stream::new().feed(output.as_bytes())).len());
+    }
+}
+
+#[test]
+fn what_is_sent_for_plain_output_is_not_much_bigger_than_the_output() {
+    let output = "y\r\n".repeat(5000);
+    let commands = Stream::new().feed(output.as_bytes());
+    let unpacked_size = serde_json::to_string(&commands).unwrap().len();
+    let packed_size = serde_json::to_string(&pack(commands)).unwrap().len();
+    // escaping \r and \n doubles them; nothing more
+    assert!(packed_size < output.len() * 2, "{} bytes are sent for {} bytes of output", packed_size, output.len());
+    assert!(unpacked_size > packed_size * 5, "packing saved less than expected: {} -> {}", unpacked_size, packed_size);
+}

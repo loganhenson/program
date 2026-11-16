@@ -74,7 +74,11 @@ suite =
                         [ \content ->
                             Expect.equal
                                 content
-                                ("                                  \u{000D}     cd Desktop                              \n"
+                                -- The carriage return in this recording arrives as text.
+                                -- Text now carries the control characters around it (that
+                                -- is how output is sent compactly), so it returns the
+                                -- carriage; it used to be put on the screen as a character.
+                                ("     cd Desktop                                                                 \n"
                                     ++ "Desktop/    Documents/  Downloads/                                              \n"
                                     ++ "                                                                                \n"
                                     ++ "                                                                                "

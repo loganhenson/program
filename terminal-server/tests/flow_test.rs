@@ -117,3 +117,52 @@ fn ctrl_c_stops_a_flood_at_once_and_the_shell_is_usable_again() {
         pressed.elapsed()
     );
 }
+
+#[test]
+fn a_screen_that_asks_for_output_gets_all_of_it_in_order_and_is_told_when_it_ends() {
+    use terminal::terminal::{Next, Output};
+
+    let (output_tx, output_rx) = mpsc::channel();
+    let (resized_tx, resized_rx) = mpsc::channel();
+    std::thread::spawn(move || for _ in resized_rx {});
+    let api = start(std::env::temp_dir().to_string_lossy().to_string(), output_tx, resized_tx).expect("a shell");
+    let output = Output::new(output_rx, api.flow.clone());
+
+    // a few thousand numbered lines, then the shell exits
+    api.run_tx.send("seq 1 3000; exit\r".to_string()).unwrap();
+
+    let mut acknowledged = 0;
+    let mut seen = String::new();
+    let mut waited_for_nothing = 0;
+    let started = Instant::now();
+    loop {
+        assert!(started.elapsed() < Duration::from_secs(60), "the output never ended");
+        match output.next(acknowledged, Duration::from_millis(200)) {
+            Next::Batch(batch) => {
+                assert_eq!(batch.sequence, acknowledged + 1, "a batch was skipped or repeated");
+                acknowledged = batch.sequence;
+                seen.push_str(&serde_json::to_string(&batch.commands).unwrap());
+            }
+            Next::Nothing => waited_for_nothing += 1,
+            Next::Closed => break,
+        }
+    }
+    let _ = waited_for_nothing;
+
+    assert!(seen.contains("3000"), "the end of the output is missing");
+    assert!(seen.contains(terminal::terminal::CHILD_EXITED), "the screen was not told that the shell exited");
+    // and it stays closed
+    assert!(matches!(output.next(acknowledged, Duration::from_millis(50)), Next::Closed));
+}
+
+#[test]
+fn a_terminal_that_could_not_start_gives_its_reason_as_output_and_then_ends() {
+    use terminal::terminal::{Next, Output};
+
+    let output = Output::of_failure("out of ptys");
+    match output.next(0, Duration::from_millis(100)) {
+        Next::Batch(batch) => assert!(serde_json::to_string(&batch.commands).unwrap().contains("out of ptys")),
+        other => panic!("expected the reason, got {:?}", other),
+    }
+    assert!(matches!(output.next(1, Duration::from_millis(100)), Next::Closed));
+}

@@ -30,6 +30,7 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
   const browser = await webkit.launch()
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: scale })
   const ptys = {}
+  const outputs = {}
   const log = []
   page.on('pageerror', e => log.push('PAGE ERROR: ' + e.message))
   const dispatch = (event, payload) => page.evaluate(([e, p]) => window.__dispatch(e, p), [event, payload]).catch(() => {})
@@ -46,20 +47,24 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
     if (event === 'openTerminal') {
       // as the backends do: a project's terminal starts in the project, any other in the home directory
       const directory = payload.workspaceId || payload.cwd || process.env.HOME
-      // --acks: output is held back until the page has acknowledged what it was sent, as in the apps
+      // --acks: output is held back until the page has taken what it has, as in the apps
       const child = spawn(HEADLESS, ['pty', directory, '--acks'], { env: shellEnv(), cwd: directory, stdio: ['pipe', 'pipe', 'ignore'] })
-      ptys[(payload.workspaceId || '') + '|' + payload.terminalId] = child
+      child.stdin.on('error', () => {})
+      const key = (payload.workspaceId || '') + '|' + payload.terminalId
+      ptys[key] = child
+      const output = outputs[key] = { batches: [], waiting: [], closed: false }
+      const wake = () => output.waiting.splice(0).forEach(resolve => resolve())
       let pending = ''
       child.stdout.on('data', data => {
         pending += data.toString()
         let i
         while ((i = pending.indexOf('\n')) >= 0) {
           const line = pending.slice(0, i); pending = pending.slice(i + 1)
-          if (!line) continue
-          const { sequence, commands } = JSON.parse(line)
-          dispatch('output', { terminalId: payload.terminalId, workspaceId: payload.workspaceId, sequence, data: commands })
+          if (line) output.batches.push(JSON.parse(line))
         }
+        wake()
       })
+      child.on('exit', () => { output.closed = true; wake() })
     } else if (event === 'run') {
       const child = ptys[(payload.workspaceId || '') + '|' + payload.terminalId]
       if (child) child.stdin.write(JSON.stringify({ run: payload.contents }) + '\n')
@@ -88,9 +93,21 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
     }
   })
 
-  await page.exposeFunction('__acknowledged', ({ workspaceId, terminalId, sequence }) => {
-    const child = ptys[(workspaceId || '') + '|' + terminalId]
-    if (child && !child.killed) child.stdin.write(JSON.stringify({ ack: sequence }) + '\n')
+  // The page asks for a terminal's next batch and says which one it has
+  // taken: what the apps' `next_output` command does.
+  await page.exposeFunction('__nextOutput', async ({ workspaceId, terminalId, acknowledged }) => {
+    const key = (workspaceId || '') + '|' + terminalId
+    const output = outputs[key], child = ptys[key]
+    if (!output) return { state: 'unknown' }
+    if (child.exitCode === null && child.stdin.writable) child.stdin.write(JSON.stringify({ ack: acknowledged }) + '\n')
+    if (!output.batches.length && !output.closed) {
+      await Promise.race([new Promise(resolve => output.waiting.push(resolve)), sleep(2000)])
+    }
+    if (output.batches.length) {
+      const { sequence, commands } = output.batches.shift()
+      return { state: 'output', sequence, data: commands }
+    }
+    return { state: output.closed ? 'closed' : 'waiting' }
   })
 
   await page.addInitScript(({ recents, pick, startup }) => {
@@ -110,7 +127,7 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
         if (cmd === 'get_recent_projects') return recents
         if (cmd === 'startup_directory') return startup
         if (cmd === 'dom_dump') return false
-        if (cmd === 'acknowledge_output') { window.__acknowledged(args); return null }
+        if (cmd === 'next_output') return window.__nextOutput(args)
         // the native folder picker: the folder that gets chosen in it
         if (cmd === 'plugin:dialog|open') return pick
         if (cmd === 'plugin:event|listen') { listeners[args.event] = args.handler; return args.handler }
