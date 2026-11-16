@@ -2,6 +2,14 @@
 
 A monorepo containing two macOS apps — a terminal emulator and a code editor — built on Tauri with an Elm frontend.
 
+**TerminalPro** — an artisan command, Claude Code and Codex in three tabs:
+
+![TerminalPro running php artisan, Claude Code and Codex in three tabs](docs/terminal-pro.gif)
+
+**EditorPro** — this repository open, with tests and Claude Code in the integrated terminal, and a second project in its own tab:
+
+![EditorPro with a project open, tests and Claude Code in its terminal, and a second project tab](docs/editor-pro.gif)
+
 ### Download
 
 Pre-built DMGs for Apple Silicon Macs are attached to each [GitHub Release](../../releases):
