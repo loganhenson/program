@@ -1,7 +1,7 @@
 mod recent_projects;
 
 use filetree::filetree::FileTreeAndFlat;
-use notify::{event::ModifyKind, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use preflight::{Check, ProbeOutcome, Report};
 use recent_projects::{RecentProjects, STORE_FILE, STORE_KEY};
 use serde_json::{self, Value};
@@ -292,15 +292,140 @@ fn emit_notification(window: &WebviewWindow, type_: &str, message: String) {
 /// workspace's state (dropping it stops fsevents). Modify events
 /// re-read the file with the usual caps and emit `externalFileChange`
 /// stamped with `workspaceId`; deletion emits `externalFileDelete`.
+/// Writes a file the page asked to save, and notes that the page has these
+/// contents (so that the watcher does not send them back as a change).
+fn save_file(file: &str, contents: &str, known: &KnownContents) -> std::io::Result<()> {
+  if file.is_empty() {
+    return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file is open"));
+  }
+  // Before writing: the watcher may look at the file the moment it changes.
+  let before = locked(known).insert(file.to_string(), contents_hash(contents));
+  let written = fs::write(file, contents);
+  if written.is_err() {
+    // what is on disk is not what the page has
+    let mut known = locked(known);
+    match before {
+      Some(hash) => known.insert(file.to_string(), hash),
+      None => known.remove(file),
+    };
+  }
+  written
+}
+
+/// What the page has of each file it was given: a hash of the contents it
+/// loaded, saved, or was last sent. The watcher on the open file compares
+/// what is on disk with this, so that the page is only sent what it does not
+/// already have. Without it every save came back as a change from outside,
+/// and whatever was typed in between was replaced by the saved text.
+type KnownContents = Arc<Mutex<HashMap<String, u64>>>;
+
+fn contents_hash(contents: &str) -> u64 {
+  use std::hash::{Hash, Hasher};
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  contents.hash(&mut hasher);
+  hasher.finish()
+}
+
+/// How long the open file has to be left alone before it is read again.
+/// One save by another program is several events (and several states of the
+/// file); reading at each of them sent the whole file to the page each time.
+const FILE_CHANGE_SETTLE_MS: u64 = 60;
+
+/// What the watcher on the open file tells the page after the file changed.
+#[derive(Debug, PartialEq)]
+enum FileChange {
+  /// It has new contents.
+  Changed(String),
+  /// It is gone (or is not a file any more).
+  Deleted,
+  /// It is now too big for the editor.
+  TooBig,
+  /// It is what the page already has, or could not be read right now.
+  Nothing,
+}
+
+/// Looks at the open file after something happened to it, and updates what
+/// the page is known to have.
+fn file_change(path: &str, known: &KnownContents) -> FileChange {
+  match load_file_with_cap(path, MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH) {
+    LoadDecision::Ok(contents) => {
+      let hash = contents_hash(&contents);
+      let mut known = locked(known);
+      if known.get(path) == Some(&hash) {
+        FileChange::Nothing
+      } else {
+        known.insert(path.to_string(), hash);
+        FileChange::Changed(contents)
+      }
+    }
+    LoadDecision::NotAFile => FileChange::Deleted,
+    LoadDecision::StatError(_) => {
+      if Path::new(path).exists() {
+        FileChange::Nothing
+      } else {
+        FileChange::Deleted
+      }
+    }
+    LoadDecision::TooLarge { .. } | LoadDecision::TooManyLines { .. } | LoadDecision::LineTooLong { .. } => {
+      // told once, not at every write to a file that stays too big
+      if locked(known).remove(path).is_some() {
+        FileChange::TooBig
+      } else {
+        FileChange::Nothing
+      }
+    }
+    LoadDecision::ReadError(_) => FileChange::Nothing,
+  }
+}
+
 fn build_file_watcher(
   path: &Path,
   workspace_id: String,
   window: WebviewWindow,
+  known: KnownContents,
 ) -> notify::Result<RecommendedWatcher> {
   let watched_path = path.to_path_buf();
   let path_for_callback = watched_path.clone();
-  let window_for_callback = window;
-  let ws_for_callback = workspace_id;
+  let path_str = watched_path.to_string_lossy().to_string();
+
+  // Dropping the watcher closes touched_tx, which ends this thread.
+  let (touched_tx, touched_rx) = mpsc::channel::<()>();
+  thread::spawn(move || {
+    let settle = std::time::Duration::from_millis(FILE_CHANGE_SETTLE_MS);
+    while touched_rx.recv().is_ok() {
+      // wait until it is left alone: a save is several events
+      loop {
+        match touched_rx.recv_timeout(settle) {
+          Ok(()) => continue,
+          Err(mpsc::RecvTimeoutError::Timeout) => break,
+          Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+      }
+      match file_change(&path_str, &known) {
+        FileChange::Changed(contents) => {
+          let _ = window.emit(
+            "externalFileChange",
+            serde_json::json!({ "workspaceId": workspace_id, "path": path_str, "contents": contents }),
+          );
+        }
+        FileChange::Deleted => {
+          let _ = window.emit(
+            "externalFileDelete",
+            serde_json::json!({ "workspaceId": workspace_id, "path": path_str }),
+          );
+        }
+        FileChange::TooBig => emit_notification(
+          &window,
+          "info",
+          format!(
+            "{} was modified externally but exceeds the editor's caps; keeping the in-memory contents.",
+            path_str
+          ),
+        ),
+        FileChange::Nothing => {}
+      }
+    }
+  });
 
   let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
     let event = match res {
@@ -310,70 +435,10 @@ fn build_file_watcher(
         return;
       }
     };
-
-    let is_our_file = event.paths.iter().any(|p| p == &path_for_callback);
-    if !is_our_file {
-      return;
-    }
-
-    let path_str = path_for_callback.to_string_lossy().to_string();
-
-    let is_delete = matches!(
-      event.kind,
-      EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
-    );
-    if is_delete {
-      if !path_for_callback.exists() {
-        let payload = serde_json::json!({
-          "workspaceId": ws_for_callback,
-          "path": path_str,
-        });
-        if let Err(e) = window_for_callback.emit("externalFileDelete", payload) {
-          eprintln!("failed to emit externalFileDelete: {:?}", e);
-        }
-        return;
-      }
-    }
-
-    let is_content_change = matches!(
-      event.kind,
-      EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any)
-    );
-    if !is_content_change {
-      return;
-    }
-
-    match load_file_with_cap(&path_str, MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH) {
-      LoadDecision::Ok(contents) => {
-        let payload = serde_json::json!({
-          "workspaceId": ws_for_callback,
-          "path": path_str,
-          "contents": contents,
-        });
-        if let Err(e) = window_for_callback.emit("externalFileChange", payload) {
-          eprintln!("failed to emit externalFileChange: {:?}", e);
-        }
-      }
-      LoadDecision::NotAFile => {
-        let payload = serde_json::json!({
-          "workspaceId": ws_for_callback,
-          "path": path_str,
-        });
-        if let Err(e) = window_for_callback.emit("externalFileDelete", payload) {
-          eprintln!("failed to emit externalFileDelete: {:?}", e);
-        }
-      }
-      LoadDecision::TooLarge { .. } | LoadDecision::TooManyLines { .. } | LoadDecision::LineTooLong { .. } => {
-        emit_notification(
-          &window_for_callback,
-          "info",
-          format!(
-            "{} was modified externally but exceeds the editor's caps; keeping the in-memory contents.",
-            path_str
-          ),
-        );
-      }
-      LoadDecision::StatError(_) | LoadDecision::ReadError(_) => {}
+    // Whatever happened to it (written in place, replaced by a rename as
+    // most programs save, removed): look at the file once it is left alone.
+    if event.paths.is_empty() || event.paths.iter().any(|p| p == &path_for_callback) {
+      let _ = touched_tx.send(());
     }
   })?;
 
@@ -706,6 +771,10 @@ fn bootstrap(
   let workspaces_for_open_term = workspaces.clone();
   let workspaces_for_close_term = workspaces.clone();
   let workspaces_for_create = workspaces.clone();
+  let known: KnownContents = Arc::new(Mutex::new(HashMap::new()));
+  let known_for_activate = known.clone();
+  let known_for_save = known;
+  let window_for_save = window.clone();
   let window_for_open_term = window.clone();
 
   let window_for_open = window.clone();
@@ -789,6 +858,30 @@ fn bootstrap(
     }
   });
 
+  // Searches run on threads of their own, one at a time each, and only for
+  // the latest request. A search is started for every key typed; run here
+  // they would hold up every other handler (keys typed in a terminal, save)
+  // for as long as they took, one after the other.
+  let search_files = latest_only(move |(workspace_id, directory, name): (String, String, String), is_stale| {
+    let resolved = locked(&tools_for_fuzzy).clone();
+    if let Some(results) = find_in_project_file_or_directory(&resolved, &directory, &name, is_stale) {
+      let _ = window_for_fuzzy_results.emit(
+        "receiveFuzzyFindResults",
+        serde_json::json!({ "workspaceId": workspace_id, "results": results }),
+      );
+    }
+  });
+  let search_projects = latest_only(move |(workspace_id, project): (String, String), is_stale| {
+    let resolved = locked(&tools_for_projects).clone();
+    let roots = locked(&recents_for_projects).project_search_roots(&home_dir());
+    if let Some(results) = find_project(&resolved, &project, &roots, is_stale) {
+      let _ = window_for_fuzzy_projects.emit(
+        "receiveFuzzyFindResults",
+        serde_json::json!({ "workspaceId": workspace_id, "results": results }),
+      );
+    }
+  });
+
   // Fuzzy-find for files within the active project — workspaceId is used
   // to confirm the right directory is searched (matches the project path).
   listen_safely(&window, "requestFuzzyFindInProjectFileOrDirectory", move |event| {
@@ -800,12 +893,7 @@ fn bootstrap(
     let directory = v["directory"].as_str().unwrap_or("").to_string();
     let name = v["file_or_directory_name"].as_str().unwrap_or("").to_string();
 
-    let resolved = locked(&tools_for_fuzzy).clone();
-    let results = find_in_project_file_or_directory(&resolved, &directory, &name);
-    let _ = window_for_fuzzy_results.emit(
-      "receiveFuzzyFindResults",
-      serde_json::json!({ "workspaceId": workspace_id, "results": results }),
-    );
+    let _ = search_files.send((workspace_id, directory, name));
   });
 
   // Fuzzy-find for project directories — used from the welcome screen
@@ -819,16 +907,7 @@ fn bootstrap(
     let project = v["project"].as_str().unwrap_or("").to_string();
     let workspace_id = v["workspaceId"].as_str().unwrap_or("").to_string();
 
-    let resolved = locked(&tools_for_projects).clone();
-    let roots = recents_for_projects
-      .lock()
-      .unwrap()
-      .project_search_roots(&home_dir());
-    let results = find_project(&resolved, &project, &roots);
-    let _ = window_for_fuzzy_projects.emit(
-      "receiveFuzzyFindResults",
-      serde_json::json!({ "workspaceId": workspace_id, "results": results }),
-    );
+    let _ = search_projects.send((workspace_id, project));
   });
 
   // Open a project tab. Add-or-focus: if already open, just emit
@@ -992,16 +1071,22 @@ fn bootstrap(
 
     match load_file_with_cap(&filename, MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH) {
       LoadDecision::Ok(contents) => {
+        locked(&known_for_activate).insert(filename.clone(), contents_hash(&contents));
         let new_watcher = build_file_watcher(
           Path::new(&filename),
           workspace_id.clone(),
           window_for_activate.clone(),
+          known_for_activate.clone(),
         );
         match new_watcher {
           Ok(w) => {
-            if let Some(ws) = locked(&workspaces_for_activate).get_mut(&workspace_id) {
-              ws.file_watcher = Some(w);
-            }
+            // The watcher it replaces is dropped after the lock is let go:
+            // stopping a watcher waits for its thread.
+            let replaced = match locked(&workspaces_for_activate).get_mut(&workspace_id) {
+              Some(ws) => ws.file_watcher.replace(w),
+              None => None,
+            };
+            drop(replaced);
           }
           Err(e) => {
             eprintln!("failed to install file watcher for {}: {:?}", filename, e);
@@ -1107,8 +1192,11 @@ fn bootstrap(
     };
     let file = v["file"].as_str().unwrap_or("");
     let contents = v["contents"].as_str().unwrap_or("");
-    if let Err(e) = fs::write(file, contents) {
-      eprintln!("save failed for {}: {:?}", file, e);
+    match save_file(file, contents, &known_for_save) {
+      Ok(()) => {}
+      // Said out loud: a save that silently did nothing is found out when
+      // the work is already gone.
+      Err(e) => emit_notification(&window_for_save, "error", format!("Could not save {}: {}", file, e)),
     }
   });
 
@@ -1286,49 +1374,135 @@ fn spawn_filetree_worker_for_workspace(
 /// can match tens of thousands of files; the UI freezes well before then.
 const MAX_FUZZY_RESULTS: usize = 5_000;
 
+/// The longest a search may run. One that is still going after this (a
+/// mount that stopped answering) is killed.
+const SEARCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs jobs one at a time on a thread of their own, and only the latest:
+/// a job that is still waiting when a newer one arrives is dropped, and the
+/// one that is running is told (through the function it is given) that
+/// nobody is waiting for its answer any more.
+fn latest_only<Job: Send + 'static>(
+  mut run: impl FnMut(Job, &mut dyn FnMut() -> bool) + Send + 'static,
+) -> Sender<Job> {
+  let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
+  thread::spawn(move || {
+    let mut waiting: Option<Job> = None;
+    loop {
+      let mut job = match waiting.take() {
+        Some(job) => job,
+        None => match jobs_rx.recv() {
+          Ok(job) => job,
+          Err(_) => return,
+        },
+      };
+      while let Ok(newer) = jobs_rx.try_recv() {
+        job = newer;
+      }
+
+      let mut is_stale = || {
+        if waiting.is_none() {
+          waiting = jobs_rx.try_recv().ok();
+        }
+        waiting.is_some()
+      };
+      // a job that goes wrong must not be the last one that runs
+      let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(job, &mut is_stale)));
+    }
+  });
+  jobs_tx
+}
+
+/// Runs a command to its end and returns what it printed. `None` when it
+/// was killed instead: because `is_stale` said nobody is waiting for the
+/// answer any more, or because it ran longer than `limit`.
+fn run_cancellable(
+  mut command: Command,
+  is_stale: &mut dyn FnMut() -> bool,
+  limit: std::time::Duration,
+) -> Option<String> {
+  use std::io::Read;
+  use std::process::Stdio;
+
+  let mut child = command
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .spawn()
+    .ok()?;
+  let mut stdout = child.stdout.take()?;
+  // read as it prints, or it would block on a full pipe
+  let reader = thread::spawn(move || {
+    let mut printed = Vec::new();
+    let _ = stdout.read_to_end(&mut printed);
+    printed
+  });
+
+  let started = std::time::Instant::now();
+  let finished = loop {
+    match child.try_wait() {
+      Ok(Some(_)) => break true,
+      Ok(None) => {}
+      Err(_) => break false,
+    }
+    if is_stale() || started.elapsed() > limit {
+      let _ = child.kill();
+      let _ = child.wait();
+      break false;
+    }
+    thread::sleep(std::time::Duration::from_millis(5));
+  };
+
+  let printed = reader.join().ok()?;
+  if finished {
+    Some(String::from_utf8_lossy(&printed).to_string())
+  } else {
+    None
+  }
+}
+
+/// `None` when the search was given up (see `run_cancellable`).
 fn find_in_project_file_or_directory(
   tools: &ResolvedTools,
   directory: &str,
   file_or_directory_name: &str,
-) -> Vec<String> {
+  is_stale: &mut dyn FnMut() -> bool,
+) -> Option<Vec<String>> {
   let Some(fd) = tools.fd.as_ref() else {
     eprintln!("fd not resolved; preflight should have blocked startup");
-    return vec![];
+    return Some(vec![]);
   };
 
   if directory.is_empty() {
-    return vec![];
+    return Some(vec![]);
   }
 
-  let args = [
+  let mut command = Command::new(fd);
+  command.args([
     "*".to_owned() + file_or_directory_name + "*",
     directory.to_string(),
     "--hidden".to_string(),
     "--glob".to_string(),
     "--exclude=.git".to_string(),
-  ];
+    // fd stops there by itself, instead of listing a huge project in full
+    // for the rest to be thrown away
+    format!("--max-results={}", MAX_FUZZY_RESULTS),
+  ]);
 
-  match Command::new(fd).args(args).output() {
-    Ok(output) => String::from_utf8_lossy(&output.stdout)
-      .lines()
-      .take(MAX_FUZZY_RESULTS)
-      .map(|s| s.to_string())
-      .collect(),
-    Err(e) => {
-      eprintln!("fd execution failed: {:?}", e);
-      vec![]
-    }
-  }
+  let printed = run_cancellable(command, is_stale, SEARCH_LIMIT)?;
+  Some(printed.lines().take(MAX_FUZZY_RESULTS).map(|s| s.to_string()).collect())
 }
 
+/// `None` when the search was given up (see `run_cancellable`).
 fn find_project(
   tools: &ResolvedTools,
   project_name: &str,
   search_roots: &[PathBuf],
-) -> Vec<String> {
+  is_stale: &mut dyn FnMut() -> bool,
+) -> Option<Vec<String>> {
   let Some(fd) = tools.fd.as_ref() else {
     eprintln!("fd not resolved; preflight should have blocked startup");
-    return vec![];
+    return Some(vec![]);
   };
 
   let pattern = format!("^{}", project_name);
@@ -1342,18 +1516,11 @@ fn find_project(
       Some(s) => s,
       None => continue,
     };
-    let args: [&str; 5] = ["--type=d", "--max-depth=1", "-L", &pattern, root_str];
+    let mut command = Command::new(fd);
+    command.args(["--type=d", "--max-depth=1", "-L", &pattern, root_str]);
 
-    match Command::new(fd).args(args).output() {
-      Ok(output) => results.extend(
-        String::from_utf8_lossy(&output.stdout)
-          .lines()
-          .map(|s| s.to_string()),
-      ),
-      Err(e) => {
-        eprintln!("fd execution failed for root {}: {:?}", root_str, e);
-      }
-    }
+    let printed = run_cancellable(command, is_stale, SEARCH_LIMIT)?;
+    results.extend(printed.lines().map(|s| s.to_string()));
     if results.len() >= MAX_FUZZY_RESULTS {
       break;
     }
@@ -1364,9 +1531,8 @@ fn find_project(
   let mut seen = std::collections::HashSet::new();
   results.retain(|p| seen.insert(p.clone()));
   results.truncate(MAX_FUZZY_RESULTS);
-  results
+  Some(results)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1418,6 +1584,219 @@ mod tests {
 
     assert!(map.is_poisoned());
     assert_eq!(locked(&map).get("open"), Some(&1));
+  }
+
+  fn scratch_file(name: &str) -> String {
+    let directory = std::env::temp_dir().join(format!("editor-pro-{}-{}", name, std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    directory.join("file.txt").to_string_lossy().to_string()
+  }
+
+  fn known() -> KnownContents {
+    Arc::new(Mutex::new(HashMap::new()))
+  }
+
+  #[test]
+  fn the_editors_own_save_is_not_sent_back_as_a_change_from_outside() {
+    // it used to be: whatever was typed between the save and its echo was
+    // replaced by the saved text
+    let file = scratch_file("own-save");
+    let known = known();
+    fs::write(&file, "opened").unwrap();
+    locked(&known).insert(file.clone(), contents_hash("opened"));
+
+    save_file(&file, "typed and saved", &known).unwrap();
+    assert_eq!(fs::read_to_string(&file).unwrap(), "typed and saved");
+    assert_eq!(file_change(&file, &known), FileChange::Nothing);
+  }
+
+  #[test]
+  fn a_change_from_outside_is_sent_once() {
+    let file = scratch_file("outside-change");
+    let known = known();
+    fs::write(&file, "opened").unwrap();
+    locked(&known).insert(file.clone(), contents_hash("opened"));
+
+    fs::write(&file, "changed by another program").unwrap();
+    assert_eq!(file_change(&file, &known), FileChange::Changed("changed by another program".to_string()));
+    // more events for the same save
+    assert_eq!(file_change(&file, &known), FileChange::Nothing);
+  }
+
+  #[test]
+  fn a_file_replaced_by_a_rename_is_noticed() {
+    // how most programs save: write next to it, rename over it
+    let file = scratch_file("replaced");
+    let known = known();
+    fs::write(&file, "opened").unwrap();
+    locked(&known).insert(file.clone(), contents_hash("opened"));
+
+    let next_to_it = format!("{}.tmp", file);
+    fs::write(&next_to_it, "formatted").unwrap();
+    fs::rename(&next_to_it, &file).unwrap();
+    assert_eq!(file_change(&file, &known), FileChange::Changed("formatted".to_string()));
+  }
+
+  #[test]
+  fn a_file_that_is_removed_is_reported_as_gone() {
+    let file = scratch_file("removed");
+    let known = known();
+    fs::write(&file, "opened").unwrap();
+    locked(&known).insert(file.clone(), contents_hash("opened"));
+
+    fs::remove_file(&file).unwrap();
+    assert_eq!(file_change(&file, &known), FileChange::Deleted);
+  }
+
+  #[test]
+  fn a_file_that_grows_too_big_is_said_once() {
+    let file = scratch_file("too-big");
+    let known = known();
+    fs::write(&file, "opened").unwrap();
+    locked(&known).insert(file.clone(), contents_hash("opened"));
+
+    fs::write(&file, "x".repeat(MAX_LINE_LENGTH + 1)).unwrap();
+    assert_eq!(file_change(&file, &known), FileChange::TooBig);
+    // a log that keeps being written
+    fs::write(&file, "y".repeat(MAX_LINE_LENGTH + 2)).unwrap();
+    assert_eq!(file_change(&file, &known), FileChange::Nothing);
+    // and when it is small again, the page gets it
+    fs::write(&file, "small again").unwrap();
+    assert_eq!(file_change(&file, &known), FileChange::Changed("small again".to_string()));
+  }
+
+  #[test]
+  fn a_save_that_fails_is_an_error_and_is_not_taken_for_saved() {
+    let known = known();
+    let nowhere = "/nonexistent-directory/for/editor-pro/file.txt";
+    assert!(save_file(nowhere, "work", &known).is_err());
+    assert!(locked(&known).get(nowhere).is_none());
+
+    // nothing open
+    assert!(save_file("", "work", &known).is_err());
+
+    // a file that may not be written
+    use std::os::unix::fs::PermissionsExt;
+    let file = scratch_file("read-only");
+    fs::write(&file, "on disk").unwrap();
+    locked(&known).insert(file.clone(), contents_hash("on disk"));
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+    assert!(save_file(&file, "edited", &known).is_err());
+    // what the page is taken to have is still what is on disk
+    assert_eq!(locked(&known).get(&file), Some(&contents_hash("on disk")));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "on disk");
+  }
+
+  fn shell(script: &str) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", script]);
+    command
+  }
+
+  #[test]
+  fn a_command_runs_to_its_end_and_what_it_printed_comes_back() {
+    let printed = run_cancellable(shell("echo one; echo two"), &mut || false, std::time::Duration::from_secs(5));
+    assert_eq!(printed, Some("one\ntwo\n".to_string()));
+  }
+
+  #[test]
+  fn a_command_that_prints_more_than_a_pipe_holds_does_not_block() {
+    let printed = run_cancellable(shell("head -c 2000000 /dev/zero | tr '\\0' x"), &mut || false, std::time::Duration::from_secs(10));
+    assert_eq!(printed.map(|printed| printed.len()), Some(2_000_000));
+  }
+
+  #[test]
+  fn a_command_nobody_waits_for_any_more_is_killed() {
+    let started = std::time::Instant::now();
+    let mut asked = 0;
+    let printed = run_cancellable(
+      shell("sleep 30"),
+      &mut || {
+        asked += 1;
+        asked > 10
+      },
+      std::time::Duration::from_secs(60),
+    );
+    assert_eq!(printed, None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "it was left running for {:?}", started.elapsed());
+  }
+
+  #[test]
+  fn a_command_that_hangs_is_killed_when_its_time_is_up() {
+    let started = std::time::Instant::now();
+    let printed = run_cancellable(shell("sleep 30"), &mut || false, std::time::Duration::from_millis(300));
+    assert_eq!(printed, None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+  }
+
+  #[test]
+  fn only_the_latest_job_runs_when_they_arrive_faster_than_they_finish() {
+    // a search for every key typed, each taking longer than the typing
+    let ran = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let ran_for_jobs = ran.clone();
+    let jobs = latest_only(move |job: u32, is_stale| {
+      for _ in 0..40 {
+        if is_stale() {
+          return;
+        }
+        thread::sleep(std::time::Duration::from_millis(5));
+      }
+      locked(&ran_for_jobs).push(job);
+    });
+
+    for job in 1..=20 {
+      jobs.send(job).unwrap();
+      thread::sleep(std::time::Duration::from_millis(10));
+    }
+    thread::sleep(std::time::Duration::from_millis(600));
+
+    let ran = locked(&ran).clone();
+    assert_eq!(ran.last(), Some(&20), "the last request was not answered");
+    assert!(ran.len() <= 3, "{} of 20 jobs ran to the end: {:?}", ran.len(), ran);
+  }
+
+  #[test]
+  fn a_job_that_panics_is_not_the_last_one_that_runs() {
+    let ran = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let ran_for_jobs = ran.clone();
+    let jobs = latest_only(move |job: u32, _is_stale| {
+      if job == 1 {
+        panic!("a search went wrong");
+      }
+      locked(&ran_for_jobs).push(job);
+    });
+
+    jobs.send(1).unwrap();
+    thread::sleep(std::time::Duration::from_millis(200));
+    jobs.send(2).unwrap();
+    thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(locked(&ran).clone(), vec![2]);
+  }
+
+  #[test]
+  fn searching_a_project_finds_files_and_stops_at_the_cap() {
+    let Some(fd) = ["/opt/homebrew/bin/fd", "/usr/local/bin/fd", "/usr/bin/fd"].iter().find(|path| Path::new(path).exists()) else {
+      eprintln!("fd is not installed here; skipped");
+      return;
+    };
+    let tools = ResolvedTools { fd: Some(fd.to_string()) };
+    let project = std::env::temp_dir().join(format!("editor-pro-search-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&project);
+    fs::create_dir_all(project.join("src")).unwrap();
+    for name in ["main.rs", "parser.rs", "notes.txt"] {
+      fs::write(project.join("src").join(name), "").unwrap();
+    }
+
+    let directory = project.to_string_lossy().to_string();
+    let found = find_in_project_file_or_directory(&tools, &directory, "pars", &mut || false).unwrap();
+    assert_eq!(found.len(), 1);
+    assert!(found[0].ends_with("src/parser.rs"));
+
+    // given up as soon as nobody waits for it
+    assert_eq!(find_in_project_file_or_directory(&tools, &directory, "", &mut || true), None);
+
+    let _ = fs::remove_dir_all(&project);
   }
 
   fn event(kind: notify::EventKind, path: &str) -> notify::Event {
@@ -1482,8 +1861,8 @@ mod tests {
   #[test]
   fn find_in_project_returns_empty_when_fd_unresolved() {
     let tools = ResolvedTools { fd: None };
-    let result = find_in_project_file_or_directory(&tools, "/tmp", "foo");
-    assert!(result.is_empty());
+    let result = find_in_project_file_or_directory(&tools, "/tmp", "foo", &mut || false);
+    assert_eq!(result, Some(vec![]));
   }
 
   #[test]
@@ -1491,16 +1870,16 @@ mod tests {
     let tools = ResolvedTools {
       fd: Some("/opt/homebrew/bin/fd".to_string()),
     };
-    let result = find_in_project_file_or_directory(&tools, "", "foo");
-    assert!(result.is_empty());
+    let result = find_in_project_file_or_directory(&tools, "", "foo", &mut || false);
+    assert_eq!(result, Some(vec![]));
   }
 
   #[test]
   fn find_project_returns_empty_when_fd_unresolved() {
     let tools = ResolvedTools { fd: None };
     let roots = vec![PathBuf::from("/tmp")];
-    let result = find_project(&tools, "some-project", &roots);
-    assert!(result.is_empty());
+    let result = find_project(&tools, "some-project", &roots, &mut || false);
+    assert_eq!(result, Some(vec![]));
   }
 
   #[test]
@@ -1527,8 +1906,8 @@ mod tests {
     let tools = ResolvedTools {
       fd: Some("/opt/homebrew/bin/fd".to_string()),
     };
-    let result = find_project(&tools, "anything", &[]);
-    assert!(result.is_empty());
+    let result = find_project(&tools, "anything", &[], &mut || false);
+    assert_eq!(result, Some(vec![]));
   }
 
   #[test]
