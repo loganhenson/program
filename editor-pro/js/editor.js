@@ -158,9 +158,6 @@ export default {
       file,
     })
   },
-  async createDirectory(directory) {
-    console.log('createDirectory', directory)
-  },
   sendVideError(error) {
     window.vide.ports.receiveVideError.send(error)
   },
@@ -460,22 +457,18 @@ export default {
       await this.createFile(emit, file)
     })
 
-    window.vide.ports.requestCreateDirectory.subscribe(async (directory) => {
-      try {
-        await this.createDirectory(directory)
-        await this.refreshDirectory(state.directory)
-      } catch (e) {
-        if (e.code === 'EEXIST' || e.code === 'EISDIR') {
-          this.sendVideError({
-            type: 'FILE_TREE_CREATE_DIRECTORY_ALREADY_EXISTS',
-            message: `A directory with name already exists`
-          })
-        }
-      }
+    // The backend makes the folder, shows it in the tree, and says so when
+    // it could not.
+    window.vide.ports.requestCreateDirectory.subscribe((directory) => {
+      emit('createDirectory', { workspaceId: this.data.activeContext.workspaceId, directory })
     })
 
-    window.vide.ports.requestDelete.subscribe(async (filesAndDirectories) => {
-      // no-op for now
+    // To the Trash. The backend only takes paths inside the project.
+    window.vide.ports.requestDelete.subscribe((filesAndDirectories) => {
+      emit('deleteFilesAndDirectories', {
+        workspaceId: this.data.activeContext.workspaceId,
+        paths: filesAndDirectories.map(entry => entry.path),
+      })
     })
   },
 }

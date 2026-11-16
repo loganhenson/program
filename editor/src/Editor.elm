@@ -201,7 +201,7 @@ step draws nothing new.
 -}
 windowStepLines : Int
 windowStepLines =
-    20
+    10
 
 
 {-| The first line of the window for a scroll position.
@@ -328,6 +328,15 @@ viewLine : Config -> Maybe Editor.Syntax.Types.Syntax -> Int -> Editor.Msg.Rende
 viewLine config syntax lineNumber renderableLine =
     Html.div
         [ Html.Attributes.style "height" (String.fromInt Constants.lineHeight ++ "px")
+
+        -- A line is a box of its own: what is inside it cannot move
+        -- anything outside it, and a line that is drawn but out of view
+        -- (the window has a margin on both sides) is not laid out or
+        -- painted until it comes into view. Without this, lines entering
+        -- the window made the browser lay out every line in it again.
+        , Html.Attributes.style "contain" "layout style"
+        , Html.Attributes.style "content-visibility" "auto"
+        , Html.Attributes.style "contain-intrinsic-height" (String.fromInt Constants.lineHeight ++ "px")
         , Html.Attributes.style "min-width" "fit-content"
         , Html.Attributes.style "padding-right"
             (if config.padRight then

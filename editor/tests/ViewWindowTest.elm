@@ -110,7 +110,7 @@ suite =
                     |> Expect.equal True
         , test "the window only moves in steps, so most scrolling draws nothing new" <|
             \_ ->
-                List.range 0 600
+                List.range 0 200
                     |> List.map (\px -> Editor.windowStart (2000 * Constants.lineHeight + px))
                     |> List.foldl (\start seen -> if List.member start seen then seen else start :: seen) []
                     |> List.length

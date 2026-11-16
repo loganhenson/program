@@ -24,6 +24,8 @@ tauri-plugin-notification = "3.0.0-alpha.3"
 tauri-plugin-dialog = "3.0.0-alpha.4"
 tauri-plugin-store = "3.0.0-alpha.3"
 notify = "8"
+# "Delete" in the file tree moves things to the Trash
+trash = "5"
 terminal = { path = "../../terminal-server" }
 filetree = { path = "./src/filetree" }
 preflight = { path = "../../preflight" }
