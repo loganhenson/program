@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- TerminalPro: a prompt and a cursor on the macOS icon grid (824px tile in a 1024px canvas) -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#33373f"/>
+      <stop offset="1" stop-color="#15171b"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.25"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6ef3a0"/>
+      <stop offset="1" stop-color="#1fbf5c"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)" filter="url(#shadow)"/>
+  <rect x="103" y="103" width="818" height="818" rx="183" fill="none" stroke="url(#edge)" stroke-width="6"/>
+  <path d="M 318 372 L 486 512 L 318 652" fill="none" stroke="url(#prompt)" stroke-width="84" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="556" y="610" width="194" height="84" rx="20" fill="#f1f5f9"/>
+</svg>

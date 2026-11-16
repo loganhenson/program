@@ -30,3 +30,9 @@ CI also produces signed-ready DMGs on tag push — see [`.github/workflows/relea
 ```bash
 npm test
 ```
+
+## Icon
+
+`src-tauri/icons/icon.svg` is the source of the app icon. After changing it,
+`node scripts/icons.js` (from the repository root) regenerates every size for
+both apps.

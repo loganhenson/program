@@ -54,3 +54,9 @@ function e() {
   open -a EditorPro.app --args "$(realpath "$@")"
 }
 ```
+
+## Icon
+
+`src-tauri/icons/icon.svg` is the source of the app icon. After changing it,
+`node scripts/icons.js` (from the repository root) regenerates every size for
+both apps.
