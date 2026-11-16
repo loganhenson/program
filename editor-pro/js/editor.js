@@ -266,9 +266,20 @@ export default {
       emit('closeWorkspace', { workspaceId })
     })
 
-    window.vide.ports.requestOpenTerminal.subscribe((payload) => {
+    window.vide.ports.requestOpenTerminal.subscribe(async (payload) => {
       // payload = { workspaceId, terminalId }
-      emit('openTerminal', payload)
+      await emit('openTerminal', payload)
+
+      // A shell starts at 80x24. The size sent when its tab became active
+      // (above) can get there before the shell exists and is then dropped,
+      // so it is sent again now that there is a shell to take it.
+      if (this.data.terminalSize) {
+        this.handlers.requestResizeTerminal({
+          workspaceId: payload.workspaceId,
+          terminalId: payload.terminalId,
+          ...this.data.terminalSize,
+        })
+      }
     })
 
     window.vide.ports.requestCloseTerminal.subscribe((payload) => {

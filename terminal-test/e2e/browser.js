@@ -297,6 +297,13 @@ const tests = {
     const first = resizes.filter(payload => payload.terminalId === 'term-0').pop()
     ok(second, 'the new tab was never sized')
     equal(second.size, first.size, 'the size of the new tab')
+
+    // ...and the shell in it has that size too. (The size used to be sent
+    // only before the shell existed, so every tab after the first ran at the
+    // 80x24 a shell starts with.)
+    await t.command('stty size', /^\d+ \d+$/)
+    const reported = (await t.rows()).filter(row => /^\d+ \d+$/.test(row.trim())).pop().trim()
+    equal(reported, `${first.size.height} ${first.size.width}`, 'the size the shell in the new tab reports')
     await t.command('exit')
     await sleep(1500)
     ok(t.emitted.some(([event, payload]) => event === 'closeTerminal' && payload.terminalId === 'term-1'), 'the tab whose shell exited was not closed')
