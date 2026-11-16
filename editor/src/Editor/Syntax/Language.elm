@@ -5,6 +5,7 @@ import Editor.Syntax.Html
 import Editor.Syntax.Javascript
 import Editor.Syntax.Json
 import Editor.Syntax.Php
+import Editor.Syntax.Rust
 import Editor.Syntax.Types exposing (Syntax)
 import List.Extra
 
@@ -34,6 +35,9 @@ getSyntaxFromFileName fileName =
 
         Just "json" ->
             Just Editor.Syntax.Json.syntax
+
+        Just "rs" ->
+            Just Editor.Syntax.Rust.syntax
 
         _ ->
             Nothing

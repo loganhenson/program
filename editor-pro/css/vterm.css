@@ -58,6 +58,10 @@ body {
     color: lightslategrey;
 }
 
+.syntax-attribute {
+    color: #bbb529;
+}
+
 .syntax-parens,
 .syntax-equals,
 .syntax-comma,
@@ -79,6 +83,7 @@ body {
 .syntax-plus,
 .syntax-star,
 .syntax-double-colon,
+.syntax-operator,
 .syntax-percent {
     color: indianred;
 }
