@@ -1,31 +1,38 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- EditorPro: lines of code and a text cursor on the macOS icon grid (824px tile in a 1024px canvas) -->
+  <!-- EditorPro: the tile is a punched card: a printed stripe and the holes of
+       a line of code. macOS icon grid: 824px tile in a 1024px canvas. -->
   <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#33373f"/>
-      <stop offset="1" stop-color="#15171b"/>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8f1df"/>
+      <stop offset="1" stop-color="#e2d5b8"/>
+    </linearGradient>
+    <linearGradient id="hole" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16327f"/>
+      <stop offset="0.3" stop-color="#2a55c4"/>
+      <stop offset="1" stop-color="#3f79ea"/>
     </linearGradient>
     <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
-      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.04"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.25"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7cc0ff"/>
-      <stop offset="1" stop-color="#2f7fe6"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.18"/>
     </linearGradient>
     <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
       <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.32"/>
     </filter>
   </defs>
-  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#card)" filter="url(#shadow)"/>
+  <rect x="240" y="250" width="544" height="42" rx="9" fill="#e2603f"/>
+  <g fill="url(#hole)">
+    <rect x="240" y="356" width="52" height="92" rx="9"/>
+    <rect x="240" y="692" width="52" height="92" rx="9"/>
+    <rect x="322" y="580" width="52" height="92" rx="9"/>
+    <rect x="404" y="468" width="52" height="92" rx="9"/>
+    <rect x="486" y="356" width="52" height="92" rx="9"/>
+    <rect x="486" y="692" width="52" height="92" rx="9"/>
+    <rect x="568" y="580" width="52" height="92" rx="9"/>
+    <rect x="650" y="468" width="52" height="92" rx="9"/>
+    <rect x="732" y="356" width="52" height="92" rx="9"/>
+    <rect x="732" y="580" width="52" height="92" rx="9"/>
+  </g>
   <rect x="103" y="103" width="818" height="818" rx="183" fill="none" stroke="url(#edge)" stroke-width="6"/>
-  <!-- three lines of code -->
-  <rect x="270" y="336" width="200" height="76" rx="38" fill="#7b8494"/>
-  <rect x="506" y="336" width="248" height="76" rx="38" fill="url(#accent)"/>
-  <rect x="362" y="474" width="240" height="76" rx="38" fill="#e2e8f0"/>
-  <rect x="362" y="612" width="170" height="76" rx="38" fill="#7b8494"/>
-  <rect x="568" y="612" width="186" height="76" rx="38" fill="#4b5261"/>
-  <!-- the text cursor, at the end of the line being typed -->
-  <rect x="636" y="450" width="40" height="124" rx="20" fill="url(#accent)"/>
 </svg>
