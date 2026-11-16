@@ -4142,7 +4142,7 @@ dependencies = [
 
 [[package]]
 name = "terminal"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "libc",
  "portable-pty",
@@ -4152,7 +4152,7 @@ dependencies = [
 
 [[package]]
 name = "terminal-pro"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "preflight",
  "serde",
