@@ -48,6 +48,32 @@ struct TerminalSlot {
 
 type Terminals = Arc<Mutex<HashMap<String, TerminalSlot>>>;
 
+/// Locks a mutex whether or not a thread panicked while holding it. What
+/// these mutexes guard (maps of what is open) stays usable after a panic,
+/// and refusing to touch it would turn one failure into every later one.
+fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+  mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Listens for an event from the page with a handler whose panic stays its
+/// own.
+///
+/// Tauri runs handlers while holding the lock on its table of listeners. A
+/// panic in one poisons that lock, and from then on every event from the
+/// page is queued and never delivered: keys typed in any terminal silently
+/// do nothing for the rest of the session, while the queue grows.
+fn listen_safely<R, F>(window: &WebviewWindow<R>, event: &'static str, handler: F)
+where
+  R: tauri::Runtime,
+  F: Fn(tauri::Event) + Send + 'static,
+{
+  window.listen(event, move |received| {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(received))).is_err() {
+      eprintln!("the handler for {:?} panicked; that one event was dropped", event);
+    }
+  });
+}
+
 /// The output flow of every open terminal, by terminal id. Kept apart from
 /// the terminals themselves so that acknowledging output never waits on
 /// anything else the app is doing.
@@ -58,8 +84,7 @@ type Flows = Arc<Mutex<HashMap<String, Flow>>>;
 /// the page can draw is slowed down instead of filling memory.
 #[tauri::command]
 fn acknowledge_output(terminal_id: String, sequence: u64, flows: tauri::State<Flows>) {
-  let flows = flows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-  if let Some(flow) = flows.get(&terminal_id) {
+  if let Some(flow) = locked(&flows).get(&terminal_id) {
     flow.acknowledge(sequence);
   }
 }
@@ -99,7 +124,7 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
 
   // Elm fires `openTerminal` on init (for the first tab) and on user
   // intent (`+` button). Spawns a PTY and inserts it in the map.
-  window.listen("openTerminal", move |event| {
+  listen_safely(&window, "openTerminal", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -114,17 +139,15 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
       .filter(|s| !s.is_empty())
       .unwrap_or_else(|| home.clone());
 
-    let (slot, flow) = spawn_terminal(&window_for_open, terminal_id.clone(), cwd);
-    flows_for_open
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .insert(terminal_id.clone(), flow);
-    terminals_for_open.lock().unwrap().insert(terminal_id, slot);
+    if let Some((slot, flow)) = spawn_terminal(&window_for_open, terminal_id.clone(), cwd) {
+      locked(&flows_for_open).insert(terminal_id.clone(), flow);
+      locked(&terminals_for_open).insert(terminal_id, slot);
+    }
   });
 
   // Close one tab. Dropping the slot flips is_active off and drops
   // kill_tx, which reaps the PTY.
-  window.listen("closeTerminal", move |event| {
+  listen_safely(&window, "closeTerminal", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -133,17 +156,14 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
       Some(s) => s.to_string(),
       None => return,
     };
-    flows_for_close
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .remove(&terminal_id);
-    if let Some(slot) = terminals_for_close.lock().unwrap().remove(&terminal_id) {
+    locked(&flows_for_close).remove(&terminal_id);
+    if let Some(slot) = locked(&terminals_for_close).remove(&terminal_id) {
       slot.is_active.store(false, Ordering::Relaxed);
       // drop(slot) here closes kill_tx + channels
     }
   });
 
-  window.listen("run", move |event| {
+  listen_safely(&window, "run", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -156,12 +176,12 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
       Some(s) => s.to_string(),
       None => return,
     };
-    if let Some(slot) = terminals_for_run.lock().unwrap().get(&terminal_id) {
+    if let Some(slot) = locked(&terminals_for_run).get(&terminal_id) {
       let _ = slot.run_tx.send(contents);
     }
   });
 
-  window.listen("resize", move |event| {
+  listen_safely(&window, "resize", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -174,7 +194,7 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
       Ok(s) => s,
       Err(_) => return,
     };
-    if let Some(slot) = terminals_for_resize.lock().unwrap().get(&terminal_id) {
+    if let Some(slot) = locked(&terminals_for_resize).get(&terminal_id) {
       let _ = slot.resize_tx.send(size);
     }
   });
@@ -182,7 +202,10 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: St
 
 /// Spawn a PTY for the given terminal id. Output/resize events carry the
 /// id so Elm can route them to the matching tab.
-fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String) -> (TerminalSlot, Flow) {
+///
+/// `None` when no shell could be started: the tab then says why, instead of
+/// the failure taking every other terminal down with it.
+fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String) -> Option<(TerminalSlot, Flow)> {
   let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
   let term_for_output = terminal_id.clone();
@@ -191,7 +214,20 @@ fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String
   let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Batch>();
   let (terminal_resize_tx, terminal_resize_rx) = mpsc::channel::<Size>();
 
-  let terminal_api = terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx);
+  let terminal_api = match terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx) {
+    Ok(api) => api,
+    Err(error) => {
+      let _ = window.emit(
+        "output",
+        serde_json::json!({
+          "terminalId": term_for_output,
+          "sequence": 0,
+          "data": terminal::terminal::start_failure_notice(&error),
+        }),
+      );
+      return None;
+    }
+  };
   let is_active = Arc::new(AtomicBool::new(true));
 
   let is_active_for_output = is_active.clone();
@@ -232,7 +268,7 @@ fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String
   });
 
   let flow = terminal_api.flow.clone();
-  (
+  Some((
     TerminalSlot {
       run_tx: terminal_api.run_tx,
       resize_tx: terminal_api.resize_tx,
@@ -240,5 +276,5 @@ fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String
       _kill_tx: terminal_api.kill_tx,
     },
     flow,
-  )
+  ))
 }

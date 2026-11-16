@@ -68,7 +68,13 @@ fn chunks() {
 fn pty(directory: String, wait_for_acks: bool) {
     let (output_tx, output_rx) = mpsc::channel();
     let (resized_tx, resized_rx) = mpsc::channel();
-    let api = start(directory, output_tx, resized_tx);
+    let api = match start(directory, output_tx, resized_tx) {
+        Ok(api) => api,
+        Err(error) => {
+            eprintln!("{}", error);
+            std::process::exit(1);
+        }
+    };
     // keep the shell alive for as long as this process runs
     let _kill_tx = api.kill_tx.clone();
 

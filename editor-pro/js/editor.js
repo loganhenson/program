@@ -155,7 +155,6 @@ export default {
   async createFile(emit, file) {
     emit('createFile', {
       workspaceId: this.data.activeContext.workspaceId,
-      directory: this.data.state.directory,
       file,
     })
   },

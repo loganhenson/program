@@ -18,7 +18,7 @@ impl Terminal {
         let (output_tx, output) = mpsc::channel();
         let (resized_tx, resized_rx) = mpsc::channel();
         std::thread::spawn(move || for _ in resized_rx {});
-        let api = start(std::env::temp_dir().to_string_lossy().to_string(), output_tx, resized_tx);
+        let api = start(std::env::temp_dir().to_string_lossy().to_string(), output_tx, resized_tx).expect("a shell");
         Terminal { api, output }
     }
 

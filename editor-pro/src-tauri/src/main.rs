@@ -24,7 +24,35 @@ use tauri::{
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_store::StoreExt;
+use filetree::filetree::Request as TreeRequest;
 use terminal::terminal::{Batch, Flow, Size};
+
+/// Locks a mutex whether or not a thread panicked while holding it. What
+/// these mutexes guard (maps of what is open) stays usable after a panic,
+/// and refusing to touch it would turn one failure into every later one.
+fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+  mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Listens for an event from the page with a handler whose panic stays its
+/// own.
+///
+/// Tauri runs handlers while holding the lock on its table of listeners. A
+/// panic in one poisons that lock, and from then on every event from the
+/// page is queued and never delivered: keys typed in a terminal, save, open,
+/// close all silently do nothing for the rest of the session, while the
+/// queue grows.
+fn listen_safely<R, F>(window: &WebviewWindow<R>, event: &'static str, handler: F)
+where
+  R: tauri::Runtime,
+  F: Fn(tauri::Event) + Send + 'static,
+{
+  window.listen(event, move |received| {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(received))).is_err() {
+      eprintln!("the handler for {:?} panicked; that one event was dropped", event);
+    }
+  });
+}
 
 /// The id of the Quit item in the app menu.
 const QUIT_MENU_ID: &str = "quit";
@@ -89,6 +117,8 @@ fn request_quit(app: &AppHandle) {
 /// so the file tree rebuilds at most once per burst rather than once per
 /// event.
 const PROJECT_REBUILD_DEBOUNCE_MS: u64 = 200;
+/// The longest a refresh of the tree is put off while changes keep coming.
+const PROJECT_REBUILD_MAX_WAIT_MS: u64 = 1000;
 
 /// Per-workspace terminal channels. When the workspace is dropped
 /// (close-tab), `is_active` flips to false so any in-flight output
@@ -170,7 +200,7 @@ fn acknowledge_output(workspace_id: String, terminal_id: String, sequence: u64, 
 struct WorkspaceState {
   file_watcher: Option<RecommendedWatcher>,
   project_watcher: Option<RecommendedWatcher>,
-  filetree_dir_tx: Sender<String>,
+  filetree_dir_tx: Sender<TreeRequest>,
   terminals: HashMap<String, TerminalSlot>,
 }
 
@@ -203,7 +233,7 @@ fn load_recents(app: &AppHandle) -> SharedRecents {
 }
 
 fn save_recents(app: &AppHandle, recents: &SharedRecents) {
-  let snapshot: Vec<String> = recents.lock().unwrap().paths().to_vec();
+  let snapshot: Vec<String> = locked(&recents).paths().to_vec();
   match app.store(STORE_FILE) {
     Ok(store) => {
       store.set(STORE_KEY, serde_json::to_value(snapshot).unwrap());
@@ -223,7 +253,7 @@ fn home_dir() -> PathBuf {
 
 #[tauri::command]
 fn get_recent_projects(recents: tauri::State<'_, SharedRecents>) -> Vec<String> {
-  recents.lock().unwrap().prune_missing()
+  locked(&recents).prune_missing()
 }
 
 /// Tall files (e.g., 50k narrow lines) produce a virtual DOM tree that
@@ -351,12 +381,34 @@ fn build_file_watcher(
   Ok(watcher)
 }
 
+/// Whether a file system event can change what the file tree shows.
+///
+/// Most events cannot: a file's contents changing (the editor's own saves, a
+/// log being written), and anything inside the directories the tree does not
+/// go into (`target`, `node_modules`, `.git`). Without this a build made the
+/// whole project be walked and sent to the page again and again.
+fn changes_the_tree(project: &Path, event: &notify::Event) -> bool {
+  use notify::event::{EventKind, ModifyKind};
+  let can_add_or_remove = match event.kind {
+    EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => true,
+    EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Metadata(_)) | EventKind::Access(_) => false,
+    // not known what happened (or the watcher lost track): look
+    EventKind::Modify(_) | EventKind::Any | EventKind::Other => true,
+  };
+  can_add_or_remove
+    && (event.paths.is_empty()
+      || event
+        .paths
+        .iter()
+        .any(|path| !filetree::filetree::is_in_skipped_directory(project, path)))
+}
+
 /// Build a recursive watcher on the project root. fs events trigger a
 /// debounced rebuild of the file tree via `filetree_dir_tx`. Caller
 /// stores the watcher in the workspace state; dropping it stops events.
 fn build_project_watcher(
   project: &Path,
-  filetree_dir_tx: Sender<String>,
+  filetree_dir_tx: Sender<TreeRequest>,
 ) -> notify::Result<RecommendedWatcher> {
   let project_path = project.to_path_buf();
   let project_str = project_path.to_string_lossy().to_string();
@@ -367,19 +419,31 @@ fn build_project_watcher(
 
   let project_str_for_worker = project_str.clone();
   thread::spawn(move || {
+    let quiet = std::time::Duration::from_millis(PROJECT_REBUILD_DEBOUNCE_MS);
+    let longest = std::time::Duration::from_millis(PROJECT_REBUILD_MAX_WAIT_MS);
     while dirty_rx.recv().is_ok() {
-      while dirty_rx.try_recv().is_ok() {}
-      thread::sleep(std::time::Duration::from_millis(PROJECT_REBUILD_DEBOUNCE_MS));
-      while dirty_rx.try_recv().is_ok() {}
-      if filetree_dir_tx.send(project_str_for_worker.clone()).is_err() {
+      // Wait until the changes have stopped for a moment, but not forever:
+      // during a long burst the tree is refreshed once a second.
+      let started = std::time::Instant::now();
+      loop {
+        match dirty_rx.recv_timeout(quiet) {
+          Ok(()) if started.elapsed() < longest => continue,
+          Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => break,
+          Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+      }
+      if filetree_dir_tx.send(TreeRequest::Refresh(project_str_for_worker.clone())).is_err() {
         break;
       }
     }
   });
 
+  let project_for_events = project_path.clone();
   let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-    if res.is_ok() {
-      let _ = dirty_tx.send(());
+    if let Ok(event) = res {
+      if changes_the_tree(&project_for_events, &event) {
+        let _ = dirty_tx.send(());
+      }
     }
   })?;
 
@@ -527,7 +591,7 @@ fn startup_directory_from(directory: Option<String>) -> Option<String> {
 #[tauri::command]
 fn preflight(state: tauri::State<'_, SharedTools>) -> Report {
   let report = preflight::run(CHECKS);
-  let mut tools = state.lock().unwrap();
+  let mut tools = locked(&state);
   *tools = derive_resolved_tools(&report);
   report
 }
@@ -541,7 +605,7 @@ fn main() {
   // changes if the user clicks "Recheck".
   {
     let report = preflight::run(CHECKS);
-    *tools.lock().unwrap() = derive_resolved_tools(&report);
+    *locked(&tools) = derive_resolved_tools(&report);
   }
 
   let tools_for_setup = tools.clone();
@@ -641,6 +705,7 @@ fn bootstrap(
   let workspaces_for_resize = workspaces.clone();
   let workspaces_for_open_term = workspaces.clone();
   let workspaces_for_close_term = workspaces.clone();
+  let workspaces_for_create = workspaces.clone();
   let window_for_open_term = window.clone();
 
   let window_for_open = window.clone();
@@ -657,7 +722,7 @@ fn bootstrap(
 
   // `run` and `resize` look up (workspace, terminal) in the maps and
   // forward to that specific terminal's channels. Registered once.
-  window.listen("run", move |event| {
+  listen_safely(&window, "run", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -674,13 +739,13 @@ fn bootstrap(
       Some(s) => s.to_string(),
       None => return,
     };
-    if let Some(ws) = workspaces_for_run.lock().unwrap().get(&workspace_id) {
+    if let Some(ws) = locked(&workspaces_for_run).get(&workspace_id) {
       if let Some(slot) = ws.terminals.get(&terminal_id) {
         let _ = slot.run_tx.send(contents);
       }
     }
   });
-  window.listen("resize", move |event| {
+  listen_safely(&window, "resize", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -697,7 +762,7 @@ fn bootstrap(
       Ok(s) => s,
       Err(_) => return,
     };
-    if let Some(ws) = workspaces_for_resize.lock().unwrap().get(&workspace_id) {
+    if let Some(ws) = locked(&workspaces_for_resize).get(&workspace_id) {
       if let Some(slot) = ws.terminals.get(&terminal_id) {
         let _ = slot.resize_tx.send(size);
       }
@@ -706,7 +771,7 @@ fn bootstrap(
 
   // `initialized` arrives from JS after Elm mounts; tell the workspace's
   // filetree worker to do its first walk.
-  window.listen("initialized", move |event| {
+  listen_safely(&window, "initialized", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -719,14 +784,14 @@ fn bootstrap(
       Some(s) => s.to_string(),
       None => return,
     };
-    if let Some(ws) = workspaces_for_initialized.lock().unwrap().get(&workspace_id) {
-      let _ = ws.filetree_dir_tx.send(directory);
+    if let Some(ws) = locked(&workspaces_for_initialized).get(&workspace_id) {
+      let _ = ws.filetree_dir_tx.send(TreeRequest::Load(directory));
     }
   });
 
   // Fuzzy-find for files within the active project — workspaceId is used
   // to confirm the right directory is searched (matches the project path).
-  window.listen("requestFuzzyFindInProjectFileOrDirectory", move |event| {
+  listen_safely(&window, "requestFuzzyFindInProjectFileOrDirectory", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -735,7 +800,7 @@ fn bootstrap(
     let directory = v["directory"].as_str().unwrap_or("").to_string();
     let name = v["file_or_directory_name"].as_str().unwrap_or("").to_string();
 
-    let resolved = tools_for_fuzzy.lock().unwrap().clone();
+    let resolved = locked(&tools_for_fuzzy).clone();
     let results = find_in_project_file_or_directory(&resolved, &directory, &name);
     let _ = window_for_fuzzy_results.emit(
       "receiveFuzzyFindResults",
@@ -746,7 +811,7 @@ fn bootstrap(
   // Fuzzy-find for project directories — used from the welcome screen
   // before any workspace exists, so the workspaceId is empty/unused on
   // its way back to Elm (Elm routes it through the welcome flow).
-  window.listen("requestFuzzyFindProjects", move |event| {
+  listen_safely(&window, "requestFuzzyFindProjects", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -754,7 +819,7 @@ fn bootstrap(
     let project = v["project"].as_str().unwrap_or("").to_string();
     let workspace_id = v["workspaceId"].as_str().unwrap_or("").to_string();
 
-    let resolved = tools_for_projects.lock().unwrap().clone();
+    let resolved = locked(&tools_for_projects).clone();
     let roots = recents_for_projects
       .lock()
       .unwrap()
@@ -768,7 +833,7 @@ fn bootstrap(
 
   // Open a project tab. Add-or-focus: if already open, just emit
   // `initialize` again so Elm switches to that tab on the JS side.
-  window.listen("requestOpenProject", move |event| {
+  listen_safely(&window, "requestOpenProject", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -788,10 +853,10 @@ fn bootstrap(
     };
     println!("requestOpenProject dir: {:?}", dir);
 
-    recents_for_open.lock().unwrap().record(&dir);
+    locked(&recents_for_open).record(&dir);
     save_recents(&app_for_open, &recents_for_open);
 
-    let already_open = workspaces_for_open.lock().unwrap().contains_key(&dir);
+    let already_open = locked(&workspaces_for_open).contains_key(&dir);
     if !already_open {
       let filetree_dir_tx =
         spawn_filetree_worker_for_workspace(&window_for_open, dir.clone());
@@ -806,7 +871,7 @@ fn bootstrap(
 
       // Terminals are spawned lazily via `openTerminal` events; the Elm
       // side auto-fires one when the workspace is first created.
-      workspaces_for_open.lock().unwrap().insert(
+      locked(&workspaces_for_open).insert(
         dir.clone(),
         WorkspaceState {
           file_watcher: None,
@@ -826,7 +891,7 @@ fn bootstrap(
   // Open a new terminal session in a workspace. Spawns a PTY in the
   // workspace's project directory and inserts it into the workspace's
   // `terminals` map under the Elm-provided id.
-  window.listen("openTerminal", move |event| {
+  listen_safely(&window, "openTerminal", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -843,7 +908,7 @@ fn bootstrap(
     // Resolve the project's directory from the workspace state so we
     // spawn the shell at the right cwd.
     let directory = {
-      let workspaces_guard = workspaces_for_open_term.lock().unwrap();
+      let workspaces_guard = locked(&workspaces_for_open_term);
       if workspaces_guard.contains_key(&workspace_id) {
         workspace_id.clone()
       } else {
@@ -852,14 +917,17 @@ fn bootstrap(
       }
     };
 
-    let new_slot = spawn_terminal_for_workspace(
+    let new_slot = match spawn_terminal_for_workspace(
       &window_for_open_term,
       workspace_id.clone(),
       terminal_id.clone(),
       directory,
-    );
+    ) {
+      Some(slot) => slot,
+      None => return,
+    };
 
-    let mut workspaces_guard = workspaces_for_open_term.lock().unwrap();
+    let mut workspaces_guard = locked(&workspaces_for_open_term);
     if let Some(ws) = workspaces_guard.get_mut(&workspace_id) {
       ws.terminals.insert(terminal_id, new_slot);
     }
@@ -867,7 +935,7 @@ fn bootstrap(
 
   // Close one terminal session within a workspace. Dropping the slot
   // reaps the PTY (via terminal-server's kill-watcher).
-  window.listen("closeTerminal", move |event| {
+  listen_safely(&window, "closeTerminal", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -881,7 +949,7 @@ fn bootstrap(
       None => return,
     };
 
-    let mut workspaces_guard = workspaces_for_close_term.lock().unwrap();
+    let mut workspaces_guard = locked(&workspaces_for_close_term);
     if let Some(ws) = workspaces_guard.get_mut(&workspace_id) {
       ws.terminals.remove(&terminal_id);
     }
@@ -890,7 +958,7 @@ fn bootstrap(
   // Close a project tab. Dropping the entry tears down its watchers +
   // filetree worker; each terminal in the workspace's `terminals` map
   // is reaped via the same Drop chain.
-  window.listen("closeWorkspace", move |event| {
+  listen_safely(&window, "closeWorkspace", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -899,7 +967,7 @@ fn bootstrap(
       Some(s) => s.to_string(),
       None => return,
     };
-    let removed = workspaces_for_close.lock().unwrap().remove(&workspace_id);
+    let removed = locked(&workspaces_for_close).remove(&workspace_id);
     if removed.is_none() {
       eprintln!("closeWorkspace: unknown workspace id {}", workspace_id);
     }
@@ -908,7 +976,7 @@ fn bootstrap(
 
   // Open a file inside a workspace. Replaces that workspace's file
   // watcher with one on the new active file.
-  window.listen("activateFileOrDirectory", move |event| {
+  listen_safely(&window, "activateFileOrDirectory", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -931,7 +999,7 @@ fn bootstrap(
         );
         match new_watcher {
           Ok(w) => {
-            if let Some(ws) = workspaces_for_activate.lock().unwrap().get_mut(&workspace_id) {
+            if let Some(ws) = locked(&workspaces_for_activate).get_mut(&workspace_id) {
               ws.file_watcher = Some(w);
             }
           }
@@ -993,23 +1061,23 @@ fn bootstrap(
 
   // Create a new empty file inside a workspace; refresh just that
   // workspace's tree + activate the new file in it.
-  window.listen("createFile", move |event| {
+  listen_safely(&window, "createFile", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
     };
     let workspace_id = v["workspaceId"].as_str().unwrap_or("").to_string();
-    let directory = v["directory"].as_str().unwrap_or("");
     let file = v["file"].as_str().unwrap_or("");
 
     if metadata(file).is_err() {
       match fs::write(file, "") {
         Ok(_) => {
-          if let Ok(tree) = filetree::filetree::build(directory.to_string()) {
-            let _ = window_for_create_file.emit(
-              "message-from-directory-tree-worker",
-              serde_json::json!({ "workspaceId": workspace_id, "tree": tree }),
-            );
+          // The project's own worker shows the new file in the tree. (This
+          // used to build the tree right here, for a directory the page
+          // always sent as "": that panicked, and took every handler in the
+          // app down with it.)
+          if let Some(ws) = locked(&workspaces_for_create).get(&workspace_id) {
+            let _ = ws.filetree_dir_tx.send(TreeRequest::Refresh(workspace_id.clone()));
           }
           let _ = window_for_create_file.emit(
             "receiveActivatedFile",
@@ -1021,14 +1089,18 @@ fn bootstrap(
           );
         }
         Err(e) => {
-          println!("error creating file: {:?}", e);
+          emit_notification(
+            &window_for_create_file,
+            "error",
+            format!("Could not create {}: {}", file, e),
+          );
         }
       }
     }
   });
 
   // Save is workspace-independent — file path + contents is enough.
-  window.listen("save", move |event| {
+  listen_safely(&window, "save", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
       Ok(v) => v,
       Err(_) => return,
@@ -1059,7 +1131,7 @@ fn bootstrap(
       }
     };
 
-    recents.lock().unwrap().record(&canonical);
+    locked(&recents).record(&canonical);
     save_recents(&app, &recents);
 
     let filetree_dir_tx = spawn_filetree_worker_for_workspace(&window, canonical.clone());
@@ -1071,7 +1143,7 @@ fn bootstrap(
       }
     };
 
-    workspaces.lock().unwrap().insert(
+    locked(&workspaces).insert(
       canonical.clone(),
       WorkspaceState {
         file_watcher: None,
@@ -1099,7 +1171,7 @@ fn spawn_terminal_for_workspace(
   workspace_id: String,
   terminal_id: String,
   directory: String,
-) -> TerminalSlot {
+) -> Option<TerminalSlot> {
   let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
   let ws_for_output = workspace_id.clone();
@@ -1110,7 +1182,23 @@ fn spawn_terminal_for_workspace(
   let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Batch>();
   let (terminal_resize_tx, terminal_resize_rx) = mpsc::channel::<Size>();
 
-  let terminal_api = terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx);
+  // `None` when no shell could be started: the terminal then says why,
+  // instead of the failure taking every other terminal down with it.
+  let terminal_api = match terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx) {
+    Ok(api) => api,
+    Err(error) => {
+      let _ = window.emit(
+        "output",
+        serde_json::json!({
+          "workspaceId": ws_for_output,
+          "terminalId": term_for_output,
+          "sequence": 0,
+          "data": terminal::terminal::start_failure_notice(&error),
+        }),
+      );
+      return None;
+    }
+  };
   let is_active = Arc::new(AtomicBool::new(true));
   let flow_registration = FlowRegistration::new(
     window.app_handle().state::<Flows>().inner(),
@@ -1157,13 +1245,13 @@ fn spawn_terminal_for_workspace(
     }
   });
 
-  TerminalSlot {
+  Some(TerminalSlot {
     run_tx: terminal_api.run_tx,
     resize_tx: terminal_api.resize_tx,
     is_active,
     _kill_tx: terminal_api.kill_tx,
     _flow: flow_registration,
-  }
+  })
 }
 
 /// Spawn a per-workspace filetree worker. Returns the sender used to
@@ -1173,9 +1261,9 @@ fn spawn_terminal_for_workspace(
 fn spawn_filetree_worker_for_workspace(
   window: &WebviewWindow,
   workspace_id: String,
-) -> Sender<String> {
+) -> Sender<TreeRequest> {
   let (ft_tx, ft_rx) = mpsc::channel::<FileTreeAndFlat>();
-  let (dir_tx, dir_rx) = mpsc::channel::<String>();
+  let (dir_tx, dir_rx) = mpsc::channel::<TreeRequest>();
 
   filetree::filetree::start(dir_rx, ft_tx);
 
@@ -1284,6 +1372,85 @@ fn find_project(
 mod tests {
   use super::*;
 
+  type Mock = tauri::test::MockRuntime;
+
+  fn mock_window() -> (tauri::App<Mock>, WebviewWindow<Mock>) {
+    let app = tauri::test::mock_app();
+    let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+      .build()
+      .unwrap();
+    (app, window)
+  }
+
+  #[test]
+  fn a_handler_that_panics_does_not_stop_the_events_that_come_after_it() {
+    use std::sync::atomic::AtomicUsize;
+    let (app, window) = mock_window();
+
+    let saves = Arc::new(AtomicUsize::new(0));
+    let saves_for_handler = saves.clone();
+    listen_safely(&window, "save", move |_| {
+      saves_for_handler.fetch_add(1, Ordering::SeqCst);
+    });
+    listen_safely(&window, "createFile", |_| panic!("a handler went wrong"));
+
+    app.emit("save", ()).unwrap();
+    app.emit("createFile", ()).unwrap();
+
+    // every event after the panic used to be queued and never delivered
+    for _ in 0..5 {
+      app.emit("save", ()).unwrap();
+    }
+    assert_eq!(saves.load(Ordering::SeqCst), 6);
+  }
+
+  #[test]
+  fn a_lock_stays_usable_after_a_thread_panicked_while_holding_it() {
+    let map: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
+    locked(&map).insert("open".to_string(), 1);
+
+    let for_panic = map.clone();
+    let _ = thread::spawn(move || {
+      let _guard = locked(&for_panic);
+      panic!("while holding the lock");
+    })
+    .join();
+
+    assert!(map.is_poisoned());
+    assert_eq!(locked(&map).get("open"), Some(&1));
+  }
+
+  fn event(kind: notify::EventKind, path: &str) -> notify::Event {
+    notify::Event::new(kind).add_path(PathBuf::from(path))
+  }
+
+  #[test]
+  fn only_changes_that_can_alter_the_tree_refresh_it() {
+    use notify::event::{AccessKind, CreateKind, DataChange, EventKind, MetadataKind, ModifyKind, RemoveKind, RenameMode};
+    let project = Path::new("/project");
+
+    // files and folders coming and going
+    assert!(changes_the_tree(project, &event(EventKind::Create(CreateKind::File), "/project/src/new.rs")));
+    assert!(changes_the_tree(project, &event(EventKind::Remove(RemoveKind::File), "/project/src/old.rs")));
+    assert!(changes_the_tree(project, &event(EventKind::Modify(ModifyKind::Name(RenameMode::Any)), "/project/src/a.rs")));
+
+    // a file being written: the editor's own saves, a log that keeps growing
+    assert!(!changes_the_tree(project, &event(EventKind::Modify(ModifyKind::Data(DataChange::Any)), "/project/src/a.rs")));
+    assert!(!changes_the_tree(project, &event(EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)), "/project/src/a.rs")));
+    assert!(!changes_the_tree(project, &event(EventKind::Access(AccessKind::Any), "/project/src/a.rs")));
+
+    // a build: thousands of files created where the tree does not look
+    assert!(!changes_the_tree(project, &event(EventKind::Create(CreateKind::File), "/project/target/debug/deps/app.o")));
+    assert!(!changes_the_tree(project, &event(EventKind::Remove(RemoveKind::File), "/project/node_modules/pkg/index.js")));
+    assert!(!changes_the_tree(project, &event(EventKind::Create(CreateKind::File), "/project/.git/index.lock")));
+    // ...but that folder itself appearing is a row in the tree
+    assert!(changes_the_tree(project, &event(EventKind::Create(CreateKind::Folder), "/project/target")));
+
+    // the watcher does not know what happened: look
+    assert!(changes_the_tree(project, &event(EventKind::Other, "/project")));
+    assert!(changes_the_tree(project, &notify::Event::new(EventKind::Any)));
+  }
+
   #[test]
   fn quitting_is_confirmed_only_while_a_project_is_open() {
     assert!(!quit_needs_confirmation(0));
@@ -1297,14 +1464,14 @@ mod tests {
     assert_eq!(open_projects(&workspaces), 0);
 
     // in use by something else: quitting does not wait, it asks
-    let held = workspaces.lock().unwrap();
+    let held = locked(&workspaces);
     assert!(quit_needs_confirmation(open_projects(&workspaces)));
     drop(held);
 
     // left poisoned by a thread that panicked while holding it: still answers
     let for_panic = workspaces.clone();
     let _ = thread::spawn(move || {
-      let _guard = for_panic.lock().unwrap();
+      let _guard = locked(&for_panic);
       panic!("poison the list");
     })
     .join();
