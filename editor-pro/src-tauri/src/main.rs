@@ -296,6 +296,86 @@ fn emit_notification(window: &WebviewWindow, type_: &str, message: String) {
 /// workspace's state (dropping it stops fsevents). Modify events
 /// re-read the file with the usual caps and emit `externalFileChange`
 /// stamped with `workspaceId`; deletion emits `externalFileDelete`.
+/// Whether a path may be created or deleted on behalf of a project: it is
+/// inside the project, and is not the project itself. The page names the
+/// path; this is what keeps a mistake there from reaching the rest of the
+/// disk.
+fn is_inside_project(project: &str, path: &str) -> bool {
+  let project = Path::new(project);
+  let path = Path::new(path);
+  !project.as_os_str().is_empty()
+    && path.is_absolute()
+    && path != project
+    && path.starts_with(project)
+    && !path.components().any(|part| matches!(part, std::path::Component::ParentDir))
+}
+
+fn entry_name(path: &str) -> String {
+  Path::new(path)
+    .file_name()
+    .map(|name| name.to_string_lossy().to_string())
+    .unwrap_or_else(|| path.to_string())
+}
+
+/// "New Folder" in the file tree. The error is what to tell the user.
+fn create_directory(project: &str, directory: &str) -> Result<(), String> {
+  if !is_inside_project(project, directory) {
+    return Err(format!("{} is not inside the project", directory));
+  }
+  match fs::create_dir(directory) {
+    Ok(()) => Ok(()),
+    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+      Err(format!("There is already something named {} there", entry_name(directory)))
+    }
+    Err(error) => Err(format!("Could not create the folder {}: {}", entry_name(directory), error)),
+  }
+}
+
+/// Moves a file or folder to the Trash.
+///
+/// Through the file manager itself, not by asking the Finder to do it (the
+/// default of the `trash` crate): that needs the user's permission to
+/// control the Finder, and waits minutes for an answer that may never come.
+fn move_to_trash(path: &Path) -> Result<(), String> {
+  use trash::macos::{DeleteMethod, TrashContextExtMacos};
+  let mut trash = trash::TrashContext::default();
+  trash.set_delete_method(DeleteMethod::NsFileManager);
+  trash.delete(path).map_err(|error| error.to_string())
+}
+
+/// "Delete" in the file tree: hands each entry to `remove` (which moves it
+/// to the Trash). Returns what to tell the user about the ones that were
+/// not removed. An entry inside another one that is being removed goes with
+/// it.
+fn delete_entries(
+  project: &str,
+  paths: &[String],
+  remove: &mut dyn FnMut(&Path) -> Result<(), String>,
+) -> Vec<String> {
+  let mut problems = vec![];
+  let mut removed: Vec<&String> = vec![];
+  let mut ordered: Vec<&String> = paths.iter().collect();
+  ordered.sort_by_key(|path| path.len());
+  for path in ordered {
+    if !is_inside_project(project, path) {
+      problems.push(format!("{} is not inside the project and was not deleted", path));
+      continue;
+    }
+    if removed.iter().any(|parent| Path::new(path).starts_with(Path::new(parent.as_str()))) {
+      continue;
+    }
+    if fs::symlink_metadata(path).is_err() {
+      // already gone
+      continue;
+    }
+    match remove(Path::new(path)) {
+      Ok(()) => removed.push(path),
+      Err(error) => problems.push(format!("Could not delete {}: {}", entry_name(path), error)),
+    }
+  }
+  problems
+}
+
 /// Writes a file the page asked to save, and notes that the page has these
 /// contents (so that the watcher does not send them back as a change).
 fn save_file(file: &str, contents: &str, known: &KnownContents) -> std::io::Result<()> {
@@ -783,6 +863,10 @@ fn bootstrap(
   let workspaces_for_open_term = workspaces.clone();
   let workspaces_for_close_term = workspaces.clone();
   let workspaces_for_create = workspaces.clone();
+  let workspaces_for_create_directory = workspaces.clone();
+  let workspaces_for_delete = workspaces.clone();
+  let window_for_create_directory = window.clone();
+  let window_for_delete = window.clone();
   let outputs_for_close_term = window.app_handle().state::<Outputs>().inner().clone();
   let known: KnownContents = Arc::new(Mutex::new(HashMap::new()));
   let known_for_activate = known.clone();
@@ -1200,6 +1284,43 @@ fn bootstrap(
     }
   });
 
+  // "New Folder" in the file tree.
+  listen_safely(&window, "createDirectory", move |event| {
+    let v: Value = match serde_json::from_str(event.payload()) {
+      Ok(v) => v,
+      Err(_) => return,
+    };
+    let workspace_id = v["workspaceId"].as_str().unwrap_or("").to_string();
+    let directory = v["directory"].as_str().unwrap_or("");
+    match create_directory(&workspace_id, directory) {
+      Ok(()) => {
+        if let Some(ws) = locked(&workspaces_for_create_directory).get(&workspace_id) {
+          let _ = ws.filetree_dir_tx.send(TreeRequest::Refresh(workspace_id.clone()));
+        }
+      }
+      Err(reason) => emit_notification(&window_for_create_directory, "error", reason),
+    }
+  });
+
+  // "Delete" in the file tree: to the Trash, where it can be got back from.
+  listen_safely(&window, "deleteFilesAndDirectories", move |event| {
+    let v: Value = match serde_json::from_str(event.payload()) {
+      Ok(v) => v,
+      Err(_) => return,
+    };
+    let workspace_id = v["workspaceId"].as_str().unwrap_or("").to_string();
+    let paths: Vec<String> = v["paths"]
+      .as_array()
+      .map(|paths| paths.iter().filter_map(|path| path.as_str().map(|path| path.to_string())).collect())
+      .unwrap_or_default();
+    for reason in delete_entries(&workspace_id, &paths, &mut move_to_trash) {
+      emit_notification(&window_for_delete, "error", reason);
+    }
+    if let Some(ws) = locked(&workspaces_for_delete).get(&workspace_id) {
+      let _ = ws.filetree_dir_tx.send(TreeRequest::Refresh(workspace_id.clone()));
+    }
+  });
+
   // Save is workspace-independent — file path + contents is enough.
   listen_safely(&window, "save", move |event| {
     let v: Value = match serde_json::from_str(event.payload()) {
@@ -1568,6 +1689,112 @@ mod tests {
 
     assert!(map.is_poisoned());
     assert_eq!(locked(&map).get("open"), Some(&1));
+  }
+
+  #[test]
+  fn only_what_is_inside_a_project_may_be_created_or_deleted_for_it() {
+    assert!(is_inside_project("/work/app", "/work/app/src"));
+    assert!(is_inside_project("/work/app", "/work/app/src/deep/file.rs"));
+
+    // the project itself, its parent, a neighbour with a longer name
+    assert!(!is_inside_project("/work/app", "/work/app"));
+    assert!(!is_inside_project("/work/app", "/work"));
+    assert!(!is_inside_project("/work/app", "/work/app-two/file"));
+    // out again by way of ..
+    assert!(!is_inside_project("/work/app", "/work/app/../other/file"));
+    // anything else
+    assert!(!is_inside_project("/work/app", "/etc/hosts"));
+    assert!(!is_inside_project("/work/app", "relative/path"));
+    assert!(!is_inside_project("/work/app", ""));
+    assert!(!is_inside_project("", "/work/app/src"));
+  }
+
+  fn scratch_project(name: &str) -> String {
+    let directory = std::env::temp_dir().join(format!("editor-pro-project-{}-{}", name, std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    fs::canonicalize(directory).unwrap().to_string_lossy().to_string()
+  }
+
+  #[test]
+  fn a_new_folder_is_made_inside_the_project() {
+    let project = scratch_project("new-folder");
+    let folder = format!("{}/components", project);
+    assert_eq!(create_directory(&project, &folder), Ok(()));
+    assert!(Path::new(&folder).is_dir());
+
+    // a second time: said, not overwritten
+    fs::write(format!("{}/kept.txt", folder), "kept").unwrap();
+    let again = create_directory(&project, &folder).unwrap_err();
+    assert!(again.contains("already"), "{}", again);
+    assert!(Path::new(&format!("{}/kept.txt", folder)).exists());
+
+    // not outside the project, and not where the folder above it is missing
+    assert!(create_directory(&project, "/tmp/editor-pro-elsewhere").is_err());
+    assert!(!Path::new("/tmp/editor-pro-elsewhere").exists());
+    assert!(create_directory(&project, &format!("{}/missing/child", project)).is_err());
+  }
+
+  #[test]
+  fn deleting_removes_what_was_chosen_and_nothing_else() {
+    let project = scratch_project("delete");
+    fs::create_dir_all(format!("{}/src/inner", project)).unwrap();
+    fs::write(format!("{}/src/inner/a.rs", project), "").unwrap();
+    fs::write(format!("{}/src/b.rs", project), "").unwrap();
+    fs::write(format!("{}/keep.txt", project), "").unwrap();
+    let outside = scratch_file("outside-the-project");
+    fs::write(&outside, "not ours").unwrap();
+
+    let mut removed: Vec<String> = vec![];
+    let chosen = vec![
+      format!("{}/src/inner/a.rs", project),
+      format!("{}/src", project),
+      outside.clone(),
+      project.clone(),
+      format!("{}/never-existed", project),
+    ];
+    let problems = delete_entries(&project, &chosen, &mut |path| {
+      removed.push(path.to_string_lossy().to_string());
+      fs::remove_dir_all(path).or_else(|_| fs::remove_file(path)).map_err(|error| error.to_string())
+    });
+
+    // the folder once (what is inside it goes with it), nothing outside, not the project itself
+    assert_eq!(removed, vec![format!("{}/src", project)]);
+    assert!(!Path::new(&format!("{}/src", project)).exists());
+    assert!(Path::new(&format!("{}/keep.txt", project)).exists());
+    assert!(Path::new(&outside).exists());
+    assert!(Path::new(&project).exists());
+    assert_eq!(problems.len(), 2, "{:?}", problems);
+    assert!(problems.iter().all(|problem| problem.contains("not inside the project")));
+  }
+
+  /// Moves a real file to the real Trash, so it is not run with the rest:
+  /// `cargo test -- --ignored the_trash`.
+  #[test]
+  #[ignore]
+  fn the_trash_takes_a_file_and_a_folder() {
+    let project = scratch_project("trash");
+    let file = format!("{}/editor-pro-trash-test.txt", project);
+    let folder = format!("{}/editor-pro-trash-test-folder", project);
+    fs::write(&file, "to the trash").unwrap();
+    fs::create_dir_all(format!("{}/inner", folder)).unwrap();
+    fs::write(format!("{}/inner/file.txt", folder), "").unwrap();
+
+    let started = std::time::Instant::now();
+    let problems = delete_entries(&project, &[file.clone(), folder.clone()], &mut move_to_trash);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "it took {:?}", started.elapsed());
+    assert_eq!(problems, Vec::<String>::new());
+    assert!(!Path::new(&file).exists());
+    assert!(!Path::new(&folder).exists());
+    assert!(Path::new(&project).exists());
+  }
+
+  #[test]
+  fn what_could_not_be_deleted_is_said() {
+    let project = scratch_project("delete-fails");
+    fs::write(format!("{}/locked.txt", project), "").unwrap();
+    let problems = delete_entries(&project, &[format!("{}/locked.txt", project)], &mut |_| Err("it is in use".to_string()));
+    assert_eq!(problems, vec!["Could not delete locked.txt: it is in use".to_string()]);
   }
 
   fn scratch_file(name: &str) -> String {

@@ -681,14 +681,15 @@ update msg model_ =
                                 nextModel =
                                     WL.mapWorkspaceByPath workspaceId
                                         (\w ->
-                                            { w
-                                                | editor = Just nextEditor
-                                                , fileTree = nextFileTree
-                                                , fileHistory = addToFileHistory w.fileHistory path contents
-                                                , activeFile = Just path
-                                                , saved = Just ( path, contents )
-                                                , focused = Editor
-                                            }
+                                            Lib.forgetOldUndoHistories
+                                                { w
+                                                    | editor = Just nextEditor
+                                                    , fileTree = nextFileTree
+                                                    , fileHistory = addToFileHistory w.fileHistory path contents
+                                                    , activeFile = Just path
+                                                    , saved = Just ( path, contents )
+                                                    , focused = Editor
+                                                }
                                         )
                                         model
                             in

@@ -1,5 +1,6 @@
 module WorkspaceTest exposing (suite)
 
+import Dict
 import Editor
 import Editor.Lib
 import Editor.Msg
@@ -219,6 +220,39 @@ suite =
                         |> Lib.noteSave (key { code = "KeyS", metaKey = False })
                         |> Lib.hasUnsavedEdits "/project/a.js"
                         |> Expect.equal True
+            ]
+        , describe "over a long session"
+            [ test "only the files opened most recently keep their undo history" <|
+                -- every file ever opened used to keep up to 200 states for
+                -- as long as the project stayed open
+                \_ ->
+                    let
+                        open path ws =
+                            Lib.activateInWorkspace ws path True |> Tuple.first
+
+                        paths =
+                            List.range 1 40 |> List.map (\n -> "/project/file" ++ String.fromInt n ++ ".js")
+
+                        start =
+                            { workspace
+                                | editor = Just (editorWith "/project/file1.js" "1")
+                                , activeFile = Just "/project/file1.js"
+                                , fileHistory = List.map (\path -> ( path, path )) paths
+                            }
+
+                        after =
+                            List.foldl open start paths
+
+                        withHistory =
+                            after.editor |> Maybe.map (.histories >> Dict.keys) |> Maybe.withDefault []
+                    in
+                    Expect.all
+                        [ \_ -> List.length withHistory |> Expect.atMost (Lib.maxFilesWithUndoHistory + 1)
+                        , \_ -> List.member "/project/file40.js" withHistory |> Expect.equal True
+                        , \_ -> List.member "/project/file39.js" withHistory |> Expect.equal True
+                        , \_ -> List.member "/project/file2.js" withHistory |> Expect.equal False
+                        ]
+                        ()
             ]
         , describe "after the open file was deleted"
             [ test "a file that was opened before can be opened again" <|

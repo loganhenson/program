@@ -1,5 +1,6 @@
 module Lib exposing (..)
 
+import Dict
 import Editor
 import Editor.Lib
 import Editor.Msg
@@ -65,6 +66,37 @@ handleEditorMsg m model =
             ( WL.mapActive (\w -> noteSave m { w | editor = Just editor }) model
             , Cmd.map EditorMsg message
             )
+
+
+{-| How many files of a project keep their undo history: the one that is
+open and the ones opened most recently.
+-}
+maxFilesWithUndoHistory : Int
+maxFilesWithUndoHistory =
+    10
+
+
+{-| Drop the undo history of files that were not opened recently. Every file
+ever opened in a project used to keep up to 200 states for as long as the
+project stayed open.
+-}
+forgetOldUndoHistories : Workspace -> Workspace
+forgetOldUndoHistories ws =
+    case ws.editor of
+        Just editor ->
+            let
+                recent =
+                    (ws.activeFile |> Maybe.map List.singleton |> Maybe.withDefault [])
+                        ++ (List.map first ws.fileHistory |> List.take maxFilesWithUndoHistory)
+            in
+            if Dict.size editor.histories <= maxFilesWithUndoHistory then
+                ws
+
+            else
+                { ws | editor = Just { editor | histories = Dict.filter (\path _ -> List.member path recent) editor.histories } }
+
+        Nothing ->
+            ws
 
 
 {-| The text in a project's editor.
@@ -255,17 +287,18 @@ activateInWorkspace ws path updateFileHistory =
                         ( nextEditor, editorMsgs ) =
                             Editor.Lib.changeFile justEditor file contents
                     in
-                    ( { nextWs
-                        | editor = Just nextEditor
-                        , activeFile = Just file
-                        , fileHistory =
-                            case updateFileHistory of
-                                True ->
-                                    addToFileHistory nextFileHistory file contents
+                    ( forgetOldUndoHistories
+                        { nextWs
+                            | editor = Just nextEditor
+                            , activeFile = Just file
+                            , fileHistory =
+                                case updateFileHistory of
+                                    True ->
+                                        addToFileHistory nextFileHistory file contents
 
-                                False ->
-                                    nextFileHistory
-                      }
+                                    False ->
+                                        nextFileHistory
+                        }
                     , Cmd.map EditorMsg editorMsgs
                     )
 
