@@ -63,6 +63,9 @@ npm run test
 .syntax-multiline-comment {
     color: lightslategrey;
 }
+.syntax-attribute {
+    color: #bbb529;
+}
 .syntax-parens,
 .syntax-equals,
 .syntax-comma,
@@ -83,6 +86,7 @@ npm run test
 .syntax-plus,
 .syntax-star,
 .syntax-double-colon,
+.syntax-operator,
 .syntax-percent {
     color: indianred;
 }
