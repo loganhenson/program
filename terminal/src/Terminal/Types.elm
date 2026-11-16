@@ -114,9 +114,13 @@ type alias Screen =
 
 {-| A run of text with one style, `columns` wide.
 
-Runs of plain ASCII are grouped into one span. Every other character gets a
+Runs of plain text are grouped into one span. Every other character gets a
 span of its own with `fixed` set, so the view can force it onto the grid even
 when the font falls back to a glyph with a different width.
+
+`stretch` marks box drawing and block characters. They are meant to touch the
+characters above and below, so the view stretches them to the full height of
+the row.
 
 -}
 type alias Span =
@@ -124,11 +128,18 @@ type alias Span =
     , columns : Int
     , style : Style
     , fixed : Bool
+    , stretch : Bool
     }
 
 
+{-| A whole line as the program printed it: rows that were wrapped at the right
+margin are joined back together, so the scrollback can be laid out again at
+any width. `wrapped` is only set on the newest line, while the rest of it is
+still on the screen.
+-}
 type alias ScrollbackLine =
     { spans : List Span
+    , columns : Int
     , wrapped : Bool
     }
 
@@ -207,6 +218,7 @@ type alias Terminal =
     , focused : Bool
     , mouse : MouseState
     , exited : Bool
+    , bells : Int
     }
 
 
@@ -260,6 +272,7 @@ type alias MouseEvent =
     , shiftKey : Bool
     , altKey : Bool
     , ctrlKey : Bool
+    , metaKey : Bool
     }
 
 

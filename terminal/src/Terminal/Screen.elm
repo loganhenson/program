@@ -33,6 +33,7 @@ sequences can do to them. Everything in here is pure; `apply` returns the
 import Array exposing (Array)
 import Bitwise
 import Set exposing (Set)
+import Terminal.BoxDrawing
 import Terminal.Color
 import Terminal.Types exposing (..)
 import Terminal.Width
@@ -133,6 +134,20 @@ defaultBlankCell =
     blankCell defaultStyle
 
 
+{-| The column left over at the end of a row when a wide character did not fit
+and moved to the next row. It takes up a column but is not text: when rows are
+joined back into a line it disappears.
+-}
+fillerCell : Style -> Cell
+fillerCell style =
+    { char = "", width = 1, style = style }
+
+
+isFiller : Cell -> Bool
+isFiller cell =
+    cell.width == 1 && cell.char == ""
+
+
 blankLine : Int -> Style -> Line
 blankLine width style =
     { cells = Array.repeat width (blankCell style), wrapped = False }
@@ -199,6 +214,7 @@ init size =
     , focused = True
     , mouse = { cell = ( 0, 0 ), wheel = 0 }
     , exited = False
+    , bells = 0
     }
 
 
@@ -289,9 +305,8 @@ screenText terminal =
 
 
 {-| Characters the terminal font draws exactly one cell wide, so a run of them
-can be rendered as ordinary text: ASCII, accented Latin, Greek, Cyrillic,
-common punctuation, and box drawing and block elements (which must touch
-their neighbours to form lines). Everything else is placed cell by cell.
+can be rendered as ordinary text: ASCII, accented Latin, Greek, Cyrillic and
+common punctuation. Everything else is placed cell by cell.
 -}
 isPlain : Cell -> Bool
 isPlain cell =
@@ -306,14 +321,38 @@ isPlain cell =
                         || (code >= 0xA0 && code <= 0x024F)
                         || (code >= 0x0370 && code <= 0x04FF)
                         || (code >= 0x2010 && code <= 0x2027)
-                        || (code >= 0x2500 && code <= 0x259F)
+                        -- box characters the terminal does not draw itself
+                        || (code >= 0x2500 && code <= 0x259F && not (Terminal.BoxDrawing.isDrawn code))
 
                 _ ->
                     False
            )
 
 
-{-| The line as styled runs of text, without the unused cells at the end.
+{-| Characters that are meant to connect with the rows above and below but are
+drawn by the font, which makes them shorter than a row: the view stretches
+them. (Most box drawing is drawn by the terminal itself, see
+`Terminal.BoxDrawing`.)
+-}
+isStretched : Cell -> Bool
+isStretched cell =
+    case String.uncons cell.char of
+        Just ( char, "" ) ->
+            let
+                code =
+                    Char.toCode char
+            in
+            -- the box characters still taken from the font (double lines and
+            -- diagonals), and the powerline separators
+            (code >= 0x2500 && code <= 0x259F && not (Terminal.BoxDrawing.isDrawn code))
+                || (code >= 0xE0B0 && code <= 0xE0BF)
+
+        _ ->
+            False
+
+
+{-| The line as styled runs of text. The unused cells at the end of the line
+are left out, unless the line continues on the next row.
 -}
 lineSpans : Line -> List Span
 lineSpans line =
@@ -331,28 +370,59 @@ lineSpans line =
                     []
 
         addCell cell spans =
-            if cell.width == 0 then
+            if cell.width == 0 || isFiller cell then
                 spans
 
             else if isPlain cell then
+                let
+                    stretch =
+                        isStretched cell
+                in
                 case spans of
                     span :: rest ->
-                        if not span.fixed && span.style == cell.style then
+                        if not span.fixed && span.stretch == stretch && span.style == cell.style then
                             { span | text = cell.char ++ span.text, columns = span.columns + 1 } :: rest
 
                         else
-                            { text = cell.char, columns = 1, style = cell.style, fixed = False } :: spans
+                            { text = cell.char, columns = 1, style = cell.style, fixed = False, stretch = stretch } :: spans
 
                     [] ->
-                        [ { text = cell.char, columns = 1, style = cell.style, fixed = False } ]
+                        [ { text = cell.char, columns = 1, style = cell.style, fixed = False, stretch = stretch } ]
 
             else
-                { text = cell.char, columns = cell.width, style = cell.style, fixed = True } :: spans
+                { text = cell.char, columns = cell.width, style = cell.style, fixed = True, stretch = isStretched cell } :: spans
     in
     Array.toList line.cells
         |> List.reverse
-        |> dropUnused
+        |> (if line.wrapped then
+                identity
+
+            else
+                dropUnused
+           )
         |> List.foldl addCell []
+
+
+{-| The cells a list of spans was made from.
+-}
+spansToCells : List Span -> List Cell
+spansToCells spans =
+    List.concatMap
+        (\span ->
+            if span.fixed then
+                if span.columns == 2 then
+                    [ { char = span.text, width = 2, style = span.style }
+                    , { char = "", width = 0, style = span.style }
+                    ]
+
+                else
+                    [ { char = span.text, width = 1, style = span.style } ]
+
+            else
+                String.toList span.text
+                    |> List.map (\char -> { char = String.fromChar char, width = 1, style = span.style })
+        )
+        spans
 
 
 
@@ -371,30 +441,114 @@ maxScrollbackBlocks =
     40
 
 
+{-| Longest line that rows are still joined into. A program that prints
+megabytes without a line break gets its output kept in pieces of this size.
+-}
+maxScrollbackLineColumns : Int
+maxScrollbackLineColumns =
+    20000
+
+
 emptyScrollback : Scrollback
 emptyScrollback =
     { blocks = [], current = { id = 0, lines = [], count = 0 } }
 
 
+{-| Append `more` to `spans`, merging the two runs that meet when they can be
+one.
+-}
+joinSpans : List Span -> List Span -> List Span
+joinSpans spans more =
+    case ( List.reverse spans, more ) of
+        ( last :: before, first :: after ) ->
+            if not last.fixed && not first.fixed && last.stretch == first.stretch && last.style == first.style then
+                List.reverse before
+                    ++ ({ last | text = last.text ++ first.text, columns = last.columns + first.columns } :: after)
+
+            else
+                spans ++ more
+
+        _ ->
+            spans ++ more
+
+
+{-| Add the row that just left the top of the screen. A row that continues a
+wrapped line is joined onto that line.
+-}
 pushScrollback : Line -> Scrollback -> Scrollback
 pushScrollback line scrollback =
     let
         current =
             scrollback.current
 
+        spans =
+            lineSpans line
+
+        columns =
+            List.sum (List.map .columns spans)
+
+        -- a line that grew too long is closed even though it goes on
+        continues =
+            line.wrapped
+
         added =
-            { current
-                | lines = { spans = lineSpans line, wrapped = line.wrapped } :: current.lines
-                , count = current.count + 1
-            }
+            case current.lines of
+                last :: rest ->
+                    if last.wrapped then
+                        { current
+                            | lines =
+                                { spans = joinSpans last.spans spans
+                                , columns = last.columns + columns
+                                , wrapped = continues && last.columns + columns < maxScrollbackLineColumns
+                                }
+                                    :: rest
+                        }
+
+                    else
+                        { current
+                            | lines = { spans = spans, columns = columns, wrapped = continues } :: current.lines
+                            , count = current.count + 1
+                        }
+
+                [] ->
+                    { current
+                        | lines = [ { spans = spans, columns = columns, wrapped = continues } ]
+                        , count = 1
+                    }
+
+        unfinished =
+            List.head added.lines
+                |> Maybe.map .wrapped
+                |> Maybe.withDefault False
     in
-    if added.count >= scrollbackBlockSize then
+    if added.count >= scrollbackBlockSize && not unfinished then
         { blocks = List.take maxScrollbackBlocks (added :: scrollback.blocks)
         , current = { id = added.id + 1, lines = [], count = 0 }
         }
 
     else
         { scrollback | current = added }
+
+
+{-| Take the newest line back out of the scrollback.
+-}
+popScrollback : Scrollback -> Maybe ( ScrollbackLine, Scrollback )
+popScrollback scrollback =
+    let
+        current =
+            scrollback.current
+    in
+    case current.lines of
+        line :: rest ->
+            Just ( line, { scrollback | current = { current | lines = rest, count = current.count - 1 } } )
+
+        [] ->
+            case scrollback.blocks of
+                block :: older ->
+                    popScrollback { blocks = older, current = block }
+
+                [] ->
+                    Nothing
 
 
 {-| All scrollback lines, oldest first.
@@ -950,7 +1104,7 @@ printChar char printer =
                                 if printer.x < width then
                                     printer.cells
                                         |> releaseCell printer.terminal.pen printer.x
-                                        |> Array.set printer.x (blankCell printer.terminal.pen)
+                                        |> Array.set printer.x (fillerCell printer.terminal.pen)
 
                                 else
                                     printer.cells
@@ -2080,7 +2234,7 @@ applySequence sequence terminal effects =
             only (tabForward 1 terminal)
 
         "\u{0007}" ->
-            ( terminal, Bell :: effects )
+            ( { terminal | bells = terminal.bells + 1 }, Bell :: effects )
 
         -- IND, NEL, RI
         "D" ->
@@ -2453,47 +2607,343 @@ resizeLine width line =
         { line | cells = Array.append line.cells (Array.repeat (width - current) defaultBlankCell) }
 
 
-resizeScreen : TerminalSize -> (Line -> Scrollback -> Scrollback) -> ( Screen, Scrollback ) -> ( Screen, Scrollback )
-resizeScreen size keep ( screen, scrollback ) =
+{-| The alternate screen belongs to a full screen program that redraws itself
+when the size changes: rows are cut or padded, nothing is rearranged.
+-}
+resizeAlternate : TerminalSize -> Screen -> Screen
+resizeAlternate size screen =
     let
         height =
             Array.length screen.lines
 
-        shrink remaining ( lines, cursorY, kept ) =
-            if remaining <= 0 then
-                ( lines, cursorY, kept )
-
-            else if Array.length lines - 1 > cursorY then
-                -- there are lines below the cursor: drop the last one
-                shrink (remaining - 1) ( Array.slice 0 -1 lines, cursorY, kept )
-
-            else
-                -- the cursor is on the last line: the first one scrolls away
-                shrink (remaining - 1)
-                    ( Array.slice 1 (Array.length lines) lines
-                    , max 0 (cursorY - 1)
-                    , Array.get 0 lines
-                        |> Maybe.map (\line -> keep line kept)
-                        |> Maybe.withDefault kept
-                    )
-
-        ( resizedLines, y, nextScrollback ) =
+        lines =
             if size.height < height then
-                shrink (height - size.height) ( screen.lines, screen.cursor.y, scrollback )
+                -- keep the cursor on the screen
+                let
+                    drop =
+                        clamp 0 (height - size.height) (screen.cursor.y - size.height + 1)
+                in
+                Array.slice drop (drop + size.height) screen.lines
 
             else
-                ( Array.append screen.lines (Array.repeat (size.height - height) (blankLine size.width defaultStyle))
-                , screen.cursor.y
-                , scrollback
+                Array.append screen.lines (Array.repeat (size.height - height) (blankLine size.width defaultStyle))
+
+        dropped =
+            if size.height < height then
+                clamp 0 (height - size.height) (screen.cursor.y - size.height + 1)
+
+            else
+                0
+    in
+    { screen
+        | lines = Array.map (resizeLine size.width) lines
+        , cursor = { x = clamp 0 size.width screen.cursor.x, y = clamp 0 (size.height - 1) (screen.cursor.y - dropped) }
+        , scrollTop = 0
+        , scrollBottom = size.height - 1
+    }
+
+
+{-| A line as the program printed it, however many rows it takes up. `cursor`
+is the position of the cursor in the line, counted in cells.
+-}
+type alias LogicalLine =
+    { cells : List Cell
+    , cursor : Maybe Int
+    }
+
+
+dropTrailingBlanks : Int -> List Cell -> List Cell
+dropTrailingBlanks keep cells =
+    let
+        drop count reversed =
+            case reversed of
+                cell :: rest ->
+                    if count > keep && cell == defaultBlankCell then
+                        drop (count - 1) rest
+
+                    else
+                        reversed
+
+                [] ->
+                    []
+    in
+    List.reverse (drop (List.length cells) (List.reverse cells))
+
+
+{-| Join the rows of the screen back into the lines the program printed.
+-}
+logicalLines : Screen -> List LogicalLine
+logicalLines screen =
+    let
+        finish pending =
+            { cells = dropTrailingBlanks (Maybe.withDefault 0 pending.cursor) pending.cells
+            , cursor = pending.cursor
+            }
+
+        step ( y, line ) ( pending, done ) =
+            let
+                before =
+                    List.length pending.cells
+
+                joined =
+                    { cells = pending.cells ++ List.filter (not << isFiller) (Array.toList line.cells)
+                    , cursor =
+                        if y == screen.cursor.y then
+                            Just (before + clamp 0 (Array.length line.cells) screen.cursor.x)
+
+                        else
+                            pending.cursor
+                    }
+            in
+            if line.wrapped then
+                ( joined, done )
+
+            else
+                ( { cells = [], cursor = Nothing }, finish joined :: done )
+
+        ( last, lines ) =
+            Array.toIndexedList screen.lines
+                |> List.foldl step ( { cells = [], cursor = Nothing }, [] )
+    in
+    List.reverse
+        (if List.isEmpty last.cells && last.cursor == Nothing then
+            lines
+
+         else
+            finish last :: lines
+        )
+
+
+{-| Lay a line out in rows of `width` columns. Returns the rows and where the
+cursor ended up (row within the line, column).
+-}
+wrapLine : Int -> LogicalLine -> ( List Line, Maybe ( Int, Int ) )
+wrapLine width logical =
+    let
+        -- a row that continues is only short when a wide character did not fit
+        toLine continues cells =
+            let
+                used =
+                    List.length cells
+
+                padding =
+                    if continues then
+                        fillerCell defaultStyle
+
+                    else
+                        defaultBlankCell
+            in
+            { cells = Array.fromList (List.reverse cells ++ List.repeat (width - used) padding)
+            , wrapped = continues
+            }
+
+        -- `row` is built in reverse, `column` is how many columns it uses
+        step cell state =
+            let
+                needsNewRow =
+                    (cell.width == 2 && state.column + 2 > width) || (cell.width /= 0 && state.column >= width)
+
+                started =
+                    if needsNewRow then
+                        { state
+                            | rows = toLine True state.row :: state.rows
+                            , row = []
+                            , column = 0
+                        }
+
+                    else
+                        state
+
+                -- a wide character cannot be shown on a screen one column wide
+                placed =
+                    if cell.width == 2 && width < 2 then
+                        defaultBlankCell
+
+                    else
+                        cell
+
+                skip =
+                    cell.width == 0 && width < 2
+            in
+            if skip then
+                { started | index = started.index + 1 }
+
+            else
+                { started
+                    | row = placed :: started.row
+                    , column = started.column + placed.width
+                    , index = started.index + 1
+                    , cursor =
+                        if logical.cursor == Just started.index then
+                            Just ( List.length started.rows, started.column )
+
+                        else
+                            started.cursor
+                }
+
+        wrapped =
+            List.foldl step { rows = [], row = [], column = 0, index = 0, cursor = Nothing } logical.cells
+
+        cursor =
+            case ( wrapped.cursor, logical.cursor ) of
+                ( Just position, _ ) ->
+                    Just position
+
+                ( Nothing, Just _ ) ->
+                    -- after the last character of the line
+                    Just ( List.length wrapped.rows, wrapped.column )
+
+                ( Nothing, Nothing ) ->
+                    Nothing
+    in
+    ( List.reverse (toLine False wrapped.row :: wrapped.rows), cursor )
+
+
+{-| Change the size of the primary screen. Lines that were wrapped at the
+right margin are wrapped again at the new width, the cursor stays on the
+character it was on, rows that no longer fit move to the scrollback, and room
+that opens up at the bottom of a full screen is filled from the scrollback.
+-}
+reflowPrimary : TerminalSize -> Terminal -> ( Screen, Scrollback )
+reflowPrimary size terminal =
+    let
+        screen =
+            terminal.primary
+
+        oldHeight =
+            Array.length screen.lines
+
+        -- the screen was full up to the cursor: keep it anchored to the bottom
+        anchored =
+            screen.cursor.y >= oldHeight - 1
+
+        lines =
+            logicalLines screen
+
+        -- the first row may continue a line whose start is in the scrollback
+        ( joined, scrollbackWithoutPartial ) =
+            case ( popScrollback terminal.scrollback, lines ) of
+                ( Just ( partial, rest ), first :: others ) ->
+                    if partial.wrapped then
+                        let
+                            head =
+                                spansToCells partial.spans
+                        in
+                        ( { cells = head ++ first.cells
+                          , cursor = Maybe.map ((+) (List.length head)) first.cursor
+                          }
+                            :: others
+                        , rest
+                        )
+
+                    else
+                        ( lines, terminal.scrollback )
+
+                _ ->
+                    ( lines, terminal.scrollback )
+
+        -- empty lines below the cursor are just the unused part of the screen
+        dropUnusedLines reversed =
+            case reversed of
+                line :: rest ->
+                    if List.isEmpty line.cells && line.cursor == Nothing then
+                        dropUnusedLines rest
+
+                    else
+                        reversed
+
+                [] ->
+                    []
+
+        used =
+            List.reverse (dropUnusedLines (List.reverse joined))
+
+        ( rows, cursor ) =
+            List.foldl
+                (\line ( rowsSoFar, cursorSoFar ) ->
+                    let
+                        ( wrappedRows, position ) =
+                            wrapLine size.width line
+                    in
+                    ( rowsSoFar ++ wrappedRows
+                    , case position of
+                        Just ( row, column ) ->
+                            Just ( List.length rowsSoFar + row, column )
+
+                        Nothing ->
+                            cursorSoFar
+                    )
                 )
+                ( [], Nothing )
+                used
+
+        ( cursorRow, cursorColumn_ ) =
+            Maybe.withDefault ( max 0 (List.length rows - 1), 0 ) cursor
+
+        total =
+            List.length rows
+
+        -- too many rows: the top ones scroll away, but never the cursor's
+        overflow =
+            clamp 0 cursorRow (total - size.height)
+
+        scrolledAway =
+            List.take overflow rows
+
+        kept =
+            List.take size.height (List.drop overflow rows)
+
+        afterOverflow =
+            List.foldl pushScrollback scrollbackWithoutPartial scrolledAway
+
+        -- too few rows: bring lines back from the scrollback
+        fill needed ( top, scrollback, pulled ) =
+            if needed <= 0 then
+                ( top, scrollback, pulled )
+
+            else
+                case popScrollback scrollback of
+                    Just ( line, rest ) ->
+                        let
+                            ( wrappedRows, _ ) =
+                                wrapLine size.width { cells = spansToCells line.spans, cursor = Nothing }
+
+                            count =
+                                List.length wrappedRows
+
+                            -- more rows than there is room for: the first ones stay behind
+                            surplus =
+                                max 0 (count - needed)
+                        in
+                        fill (needed - count)
+                            ( List.drop surplus wrappedRows ++ top
+                            , List.foldl pushScrollback rest (List.take surplus wrappedRows)
+                            , pulled + count - surplus
+                            )
+
+                    Nothing ->
+                        ( top, scrollback, pulled )
+
+        ( filled, finalScrollback, pulledRows ) =
+            if anchored then
+                fill (size.height - List.length kept) ( kept, afterOverflow, 0 )
+
+            else
+                ( kept, afterOverflow, 0 )
+
+        padded =
+            filled ++ List.repeat (size.height - List.length filled) (blankLine size.width defaultStyle)
     in
     ( { screen
-        | lines = Array.map (resizeLine size.width) resizedLines
-        , cursor = { x = clamp 0 size.width screen.cursor.x, y = clamp 0 (size.height - 1) y }
+        | lines = Array.fromList padded
+        , cursor =
+            { x = clamp 0 size.width cursorColumn_
+            , y = clamp 0 (size.height - 1) (cursorRow - overflow + pulledRows)
+            }
         , scrollTop = 0
         , scrollBottom = size.height - 1
       }
-    , nextScrollback
+    , finalScrollback
     )
 
 
@@ -2504,10 +2954,7 @@ resize requested terminal =
             { height = max 1 requested.height, width = max 1 requested.width }
 
         ( primary, scrollback ) =
-            resizeScreen size pushScrollback ( terminal.primary, terminal.scrollback )
-
-        ( alternate, _ ) =
-            resizeScreen size (\_ kept -> kept) ( terminal.alternate, terminal.scrollback )
+            reflowPrimary size terminal
     in
     if size == terminal.size then
         terminal
@@ -2516,6 +2963,6 @@ resize requested terminal =
         { terminal
             | size = size
             , primary = primary
-            , alternate = alternate
+            , alternate = resizeAlternate size terminal.alternate
             , scrollback = scrollback
         }

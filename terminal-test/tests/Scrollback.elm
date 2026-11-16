@@ -33,13 +33,20 @@ suite =
                     |> List.concatMap .spans
                     |> List.map (\span -> ( span.text, span.style.foreground ))
                     |> Expect.equal [ ( "red", IndexedColor 1 ) ]
-        , test "a line that wrapped at the right margin is remembered as wrapped" <|
+        , test "a line that wrapped at the right margin is kept as one line" <|
             \_ ->
-                run 2 5 [ txt "abcdefgh", seq "\u{000D}", seq "\n", seq "\n" ]
+                run 2 5 [ txt "abcdefghijkl", seq "\u{000D}", seq "\n", seq "\n", seq "\n" ]
+                    |> .scrollback
+                    |> Screen.scrollbackLines
+                    |> List.map (\line -> ( String.concat (List.map .text line.spans), line.columns, line.wrapped ))
+                    |> Expect.equal [ ( "abcdefghijkl", 12, False ), ( "", 0, False ) ]
+        , test "the start of a line that is still partly on the screen waits for the rest" <|
+            \_ ->
+                run 2 5 [ txt "abcdefghijkl" ]
                     |> .scrollback
                     |> Screen.scrollbackLines
                     |> List.map (\line -> ( String.concat (List.map .text line.spans), line.wrapped ))
-                    |> Expect.equal [ ( "abcde", True ), ( "fgh", False ) ]
+                    |> Expect.equal [ ( "abcde", True ) ]
         , test "the scrollback is capped so long-running output cannot grow forever" <|
             \_ ->
                 let

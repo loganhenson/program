@@ -20,6 +20,8 @@ tauri = { version = "3.0.0-alpha.6", features = [] }
 tauri-runtime-wry = "3.0.0-alpha.6"
 tauri-plugin-clipboard-manager = "3.0.0-alpha.3"
 tauri-plugin-process = "3.0.0-alpha.3"
+tauri-plugin-opener = "3.0.0-alpha.3"
+tauri-plugin-notification = "3.0.0-alpha.3"
 terminal = { path = "../../terminal-server" }
 preflight = { path = "../../preflight" }
 

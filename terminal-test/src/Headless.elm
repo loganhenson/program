@@ -144,6 +144,16 @@ dump withScrollback terminal =
                     else
                         Encode.null
                   )
+
+                -- the newest scrollback line continues on the first row of the screen
+                , ( "scrollbackContinues"
+                  , Screen.scrollbackLines terminal.scrollback
+                        |> List.reverse
+                        |> List.head
+                        |> Maybe.map .wrapped
+                        |> Maybe.withDefault False
+                        |> Encode.bool
+                  )
                 ]
           )
         ]

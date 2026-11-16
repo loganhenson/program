@@ -139,7 +139,9 @@ function compareDump(dump, reference, { styles = true } = {}) {
       const orphan = cell.getWidth() === 0 && previousWidth !== 2
       const chars = orphan ? ' ' : cell.getWidth() === 0 ? '' : (cell.getChars() || ' ')
       previousWidth = cell.getWidth()
-      ourText += our.width === 0 ? '' : our.char
+      // (a column left empty because a wide character moved to the next row
+      // has no text; the reference shows it as a blank)
+      ourText += our.width === 0 ? '' : (our.char || ' ')
       referenceText += chars
 
       if (styles && !styleDifference && our.width !== 0 && cell.getWidth() !== 0) {

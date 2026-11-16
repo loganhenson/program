@@ -2,7 +2,30 @@ import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
 import {readText, writeText} from "@tauri-apps/plugin-clipboard-manager";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { fit, selectedText } from '../../terminal/js/dom.js'
+import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
+import { applyBoxStretch, createBell, fit, installLinkHandling, selectedText } from '../../terminal/js/dom.js'
+
+// A program asked for a notification (OSC 9 / OSC 777). It is only shown when
+// the window is in the background: with the window in front the user is
+// already looking at whatever the program has to say.
+async function notify(title, body) {
+  if (document.hasFocus()) {
+    return
+  }
+  try {
+    let granted = await isPermissionGranted()
+    if (!granted) {
+      granted = (await requestPermission()) === 'granted'
+    }
+    if (granted) {
+      sendNotification({ title, body })
+    }
+  } catch (error) {
+    console.log('notification failed: ' + error)
+  }
+}
 
 // import {listen} from "@tauri-apps/api/event";
 
@@ -328,6 +351,19 @@ export default {
       if (text) {
         await writeText(text)
       }
+    })
+
+    // Command+click opens links in the default browser
+    installLinkHandling(url => openUrl(url).catch(error => console.log('could not open ' + url + ': ' + error)))
+    document.fonts.ready.then(applyBoxStretch)
+
+    // The bell: a quiet tone, or the dock icon bouncing when in the background
+    window.vide.ports.requestBellTerminal.subscribe(createBell(() => {
+      getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => {})
+    }))
+
+    window.vide.ports.requestNotifyTerminal.subscribe(message => {
+      notify('EditorPro', message)
     })
 
     // Programs can ask to be told when the terminal gains or loses focus

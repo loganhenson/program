@@ -655,7 +655,9 @@ encodeMouse terminal event =
                         0
                       )
     in
-    if tracking == MouseOff || event.shiftKey then
+    -- Shift (select text) and Command (open a link) keep the click for the
+    -- terminal itself
+    if tracking == MouseOff || event.shiftKey || event.metaKey then
         ( Nothing, cell )
 
     else
@@ -729,7 +731,7 @@ encodeWheel terminal event lines =
     if count == 0 then
         Nothing
 
-    else if terminal.modes.mouseTracking /= MouseOff && not event.shiftKey then
+    else if terminal.modes.mouseTracking /= MouseOff && not (event.shiftKey || event.metaKey) then
         encodeMouse terminal { event | action = MouseWheel direction }
             |> Tuple.first
             |> Maybe.map (String.repeat count)

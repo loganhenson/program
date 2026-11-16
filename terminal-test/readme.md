@@ -17,7 +17,7 @@ the screen, the cursor, the styles and what the terminal sends back.
 
 ## Compare with xterm.js
 ```bash
-npm run e2e          # differential fuzzing, also run by CI
+npm run e2e          # differential fuzzing and resize checks, also run by CI
 npm run e2e:live     # real programs (shell, vim, less, man, htop, nano, git)
 ```
 Both run the real pipeline without a window: bytes go through the Rust parser
@@ -31,6 +31,9 @@ for cell: characters, colors, attributes and cursor position.
   cases starting at seed 1; `node e2e/fuzz.js show 42` prints both screens
   for seed 42. The few places where xterm.js is deliberately not followed are
   listed at the top of the generator.
+- `e2e/reflow.js` prints random lines and resizes at random, and checks that
+  no text is lost or reordered: the complete text (scrollback and screen, with
+  wrapped rows joined) has to stay the same as in xterm.js.
 - `e2e/live.js` runs programs in a PTY with the terminal answering their
   queries, and compares snapshots taken along the way. It depends on what is
   installed and on your shell configuration, so it is a local check.

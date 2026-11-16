@@ -13,7 +13,7 @@
     "start": "elm-live src/Main.elm --open --start-page=index.html -- --output=main.js",
     "test": "elm-test",
     "e2e:build": "cd ../terminal-server && cargo build --bin terminal-headless && cd ../terminal-test && elm make src/Headless.elm --optimize --output e2e/build/headless.js",
-    "e2e": "npm run e2e:build && node e2e/fuzz.js 300",
+    "e2e": "npm run e2e:build && node e2e/fuzz.js 300 && node e2e/reflow.js 200",
     "e2e:live": "npm run e2e:build && node e2e/live.js"
   },
   "repository": {

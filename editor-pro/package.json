@@ -20,6 +20,8 @@
   "@tauri-apps/cli": "^3.0.0-alpha.6",
   "@tauri-apps/plugin-clipboard-manager": "^3.0.0-alpha.3",
   "@tauri-apps/plugin-dialog": "^3.0.0-alpha.4",
+  "@tauri-apps/plugin-notification": "^3.0.0-alpha.3",
+  "@tauri-apps/plugin-opener": "^3.0.0-alpha.3",
   "@tauri-apps/plugin-process": "^3.0.0-alpha.3",
   "@tauri-apps/plugin-store": "^3.0.0-alpha.3",
   "chokidar-cli": "^3.0.0",

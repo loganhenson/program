@@ -20,6 +20,7 @@ import Html.Keyed
 import Html.Lazy
 import Json.Decode as Decode exposing (Decoder, decodeValue)
 import Task
+import Terminal.BoxDrawing
 import Terminal.Color
 import Terminal.Decoders exposing (decodeTerminalCommands, decodeTerminalResized)
 import Terminal.Input
@@ -272,7 +273,7 @@ view model =
             model.terminal
     in
     div [ class "w-full h-full overflow-hidden", style "width" "100%", style "height" "100%", style "overflow" "hidden" ]
-        [ Html.node "style" [] [ text (Editor.Styles.editorPseudoStyles ++ styles) ]
+        [ Html.node "style" [] [ text stylesheet ]
         , div
             [ id "terminal-container"
             , class "w-full h-full overflow-y-scroll p-1 terminal"
@@ -280,13 +281,21 @@ view model =
             [ span [ id "character-width", class "terminal-measure" ] [ text "0" ]
             , case terminal.activeBuffer of
                 Primary ->
-                    Html.Lazy.lazy viewScrollback terminal.scrollback
+                    Html.Lazy.lazy2 viewScrollback terminal.size.width terminal.scrollback
 
                 Alternate ->
                     text ""
             , viewScreen terminal
             ]
         ]
+
+
+{-| Built once: the view hands the very same string to the virtual DOM on
+every frame, so there is nothing to compare.
+-}
+stylesheet : String
+stylesheet =
+    Editor.Styles.editorPseudoStyles ++ styles ++ Terminal.BoxDrawing.styles
 
 
 styles : String
@@ -327,6 +336,24 @@ styles =
         overflow: hidden;
     }
 
+    .terminal-scrollback .terminal-row {
+        height: auto;
+        min-height: var(--line-height);
+        white-space: break-spaces;
+        word-break: break-all;
+        line-break: anywhere;
+    }
+
+    /* The box characters that are still taken from the font (double lines,
+       diagonals) are stretched to the full height of the row so that they
+       connect from one row to the next. --terminal-box-stretch is the row
+       height divided by the height the font draws them at; the application
+       can measure and set it. */
+    .terminal-row .box {
+        display: inline-block;
+        transform: scaleY(var(--terminal-box-stretch, 1.3));
+    }
+
     /* A character that is not plain ASCII gets a cell of its own, so a glyph
        from a fallback font cannot push the rest of the line off the grid. */
     .terminal-row .w1, .terminal-row .w2 {
@@ -350,13 +377,22 @@ styles =
     .terminal-cursor.block.unfocused { background: transparent; border: 1px solid var(--cursor-color); }
     .terminal-cursor.underline { border-bottom: 2px solid var(--text-color); }
     .terminal-cursor.bar { border-left: 2px solid var(--text-color); }
+
+    /* Links open with Command+click (see terminal/js/dom.js) */
+    body.terminal-links-active .terminal [data-href] { cursor: pointer; }
     """
 
 
-viewScrollback : Scrollback -> Html Msg
-viewScrollback scrollback =
+{-| Scrollback lines are whole lines; the browser wraps them at the width of
+the screen, so they follow the window when it is resized. (The extra pixel
+keeps a line of exactly that many columns from wrapping early.)
+-}
+viewScrollback : Int -> Scrollback -> Html Msg
+viewScrollback width scrollback =
     Html.Keyed.node "div"
-        [ class "terminal-scrollback" ]
+        [ class "terminal-scrollback"
+        , style "width" ("calc(" ++ String.fromInt width ++ "ch + 1px)")
+        ]
         ((scrollback.current :: scrollback.blocks)
             |> List.reverse
             |> List.map (\block -> ( String.fromInt block.id, Html.Lazy.lazy viewScrollbackBlock block ))
@@ -367,10 +403,23 @@ viewScrollbackBlock : ScrollbackBlock -> Html Msg
 viewScrollbackBlock block =
     div []
         (List.foldl
-            (\line rows -> viewRow False line.wrapped line.spans :: rows)
+            (\line rows -> viewRow False line.wrapped (List.concatMap breakable line.spans) :: rows)
             []
             block.lines
         )
+
+
+{-| A run of stretched characters is one box that cannot be broken. In the
+scrollback, where the browser wraps lines, each gets a box of its own.
+-}
+breakable : Span -> List Span
+breakable spanData =
+    if spanData.stretch && not spanData.fixed && spanData.columns > 1 then
+        String.toList spanData.text
+            |> List.map (\char -> { spanData | text = String.fromChar char, columns = 1 })
+
+    else
+        [ spanData ]
 
 
 viewScreen : Terminal -> Html Msg
@@ -421,13 +470,30 @@ viewSpan reverseVideo spanData =
     let
         cellClass =
             if not spanData.fixed then
-                []
+                if spanData.stretch then
+                    [ class "box" ]
+
+                else
+                    []
 
             else if spanData.columns == 2 then
                 [ class "w2" ]
 
+            else if spanData.stretch then
+                [ class "w1 box" ]
+
             else
-                [ class "w1" ]
+                case String.uncons spanData.text of
+                    Just ( char, "" ) ->
+                        if Terminal.BoxDrawing.isDrawn (Char.toCode char) then
+                            -- lines and blocks the terminal draws itself
+                            [ class ("w1 " ++ Terminal.BoxDrawing.className (Char.toCode char)) ]
+
+                        else
+                            [ class "w1" ]
+
+                    _ ->
+                        [ class "w1" ]
     in
     span (cellClass ++ styleAttributes reverseVideo spanData.style) [ text spanData.text ]
 
@@ -591,7 +657,7 @@ mouseEvents terminal =
                         (\event ->
                             { message = ReceivedMouse event
                             , stopPropagation = False
-                            , preventDefault = not event.shiftKey
+                            , preventDefault = not (event.shiftKey || event.metaKey)
                             }
                         )
                 )
@@ -633,7 +699,7 @@ positioned, so their offset parent is the (relatively positioned) screen.
 mouseDecoder : MouseAction -> Decoder MouseEvent
 mouseDecoder action =
     Decode.map8
-        (\offsetX offsetY left top button buttons shiftKey ( altKey, ctrlKey ) ->
+        (\offsetX offsetY left top button buttons ( shiftKey, metaKey ) ( altKey, ctrlKey ) ->
             { action = action
             , x = left + offsetX
             , y = top + offsetY
@@ -642,6 +708,7 @@ mouseDecoder action =
             , shiftKey = shiftKey
             , altKey = altKey
             , ctrlKey = ctrlKey
+            , metaKey = metaKey
             }
         )
         (Decode.field "offsetX" Decode.float)
@@ -650,7 +717,10 @@ mouseDecoder action =
         (Decode.at [ "target", "offsetTop" ] Decode.float)
         (Decode.field "button" Decode.int)
         (Decode.field "buttons" Decode.int)
-        (Decode.field "shiftKey" Decode.bool)
+        (Decode.map2 Tuple.pair
+            (Decode.field "shiftKey" Decode.bool)
+            (Decode.field "metaKey" Decode.bool)
+        )
         (Decode.map2 Tuple.pair
             (Decode.field "altKey" Decode.bool)
             (Decode.field "ctrlKey" Decode.bool)

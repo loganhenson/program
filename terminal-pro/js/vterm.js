@@ -1,8 +1,30 @@
 const terminals = require('./terminals.js')
 import {readText, writeText} from '@tauri-apps/plugin-clipboard-manager'
 import {exit} from '@tauri-apps/plugin-process';
-import {getCurrentWindow} from '@tauri-apps/api/window'
-import {characterWidth, fit, selectedText} from '../../terminal/js/dom.js'
+import {getCurrentWindow, UserAttentionType} from '@tauri-apps/api/window'
+import {openUrl} from '@tauri-apps/plugin-opener'
+import {isPermissionGranted, requestPermission, sendNotification} from '@tauri-apps/plugin-notification'
+import {applyBoxStretch, characterWidth, createBell, fit, installLinkHandling, selectedText} from '../../terminal/js/dom.js'
+
+// A program asked for a notification (OSC 9 / OSC 777). It is only shown when
+// the window is in the background: with the window in front the user is
+// already looking at whatever the program has to say.
+async function notify(title, body) {
+  if (document.hasFocus()) {
+    return
+  }
+  try {
+    let granted = await isPermissionGranted()
+    if (!granted) {
+      granted = (await requestPermission()) === 'granted'
+    }
+    if (granted) {
+      sendNotification({ title, body })
+    }
+  } catch (error) {
+    console.log('notification failed: ' + error)
+  }
+}
 
 let _debounce = function(ms, fn) {
   let timer;
@@ -125,6 +147,24 @@ module.exports = {
 
     window.vterm.ports.requestCharacterWidth.subscribe(() => {
       window.vterm.ports.receiveCharacterWidth.send(characterWidth())
+      applyBoxStretch()
+    })
+    // the measurements depend on the font, which may still be loading
+    document.fonts.ready.then(() => {
+      window.vterm.ports.receiveCharacterWidth.send(characterWidth())
+      applyBoxStretch()
+    })
+
+    // Command+click opens links in the default browser
+    installLinkHandling(url => openUrl(url).catch(error => console.log('could not open ' + url + ': ' + error)))
+
+    // The bell: a quiet tone, or the dock icon bouncing when in the background
+    window.vterm.ports.requestBell.subscribe(createBell(() => {
+      getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => {})
+    }))
+
+    window.vterm.ports.requestNotify.subscribe(message => {
+      notify(this.data.activeContext.title || 'TerminalPro', message)
     })
 
     // Programs can ask to be told when the terminal gains or loses focus

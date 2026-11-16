@@ -396,6 +396,8 @@ fn main() {
     .runtime(tauri_runtime_wry::Wry::default())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_opener::init())
+    .plugin(tauri_plugin_notification::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .manage(tools.clone())

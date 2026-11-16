@@ -45,7 +45,7 @@ cmd k =
 
 mouse : MouseAction -> Float -> Float -> MouseEvent
 mouse action x y =
-    { action = action, x = x, y = y, button = 0, buttons = 0, shiftKey = False, altKey = False, ctrlKey = False }
+    { action = action, x = x, y = y, button = 0, buttons = 0, shiftKey = False, altKey = False, ctrlKey = False, metaKey = False }
 
 
 suite : Test
@@ -159,9 +159,12 @@ suite =
                 , encodeMouse terminal { press | button = 2, ctrlKey = True }
                 , encodeMouse terminal { press | shiftKey = True }
                 , encodeMouse terminal { press | action = MouseMove, buttons = 1 }
+
+                -- Command+click opens links, it is not for the program
+                , encodeMouse terminal { press | metaKey = True }
                 ]
                     |> List.map Tuple.first
-                    |> Expect.equal [ Just (esc ++ "[<0;3;2M"), Just (esc ++ "[<0;3;2m"), Just (esc ++ "[<18;3;2M"), Nothing, Nothing ]
+                    |> Expect.equal [ Just (esc ++ "[<0;3;2M"), Just (esc ++ "[<0;3;2m"), Just (esc ++ "[<18;3;2M"), Nothing, Nothing, Nothing ]
         , test "drag and motion reporting, once per cell" <|
             \_ ->
                 let

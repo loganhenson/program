@@ -52,6 +52,8 @@ terminalPorts workspaceId terminalId cwd =
         | requestPasteTerminal = Ports.requestPasteTerminal
         , requestCopyTerminal = Ports.requestCopyTerminal
         , requestWriteClipboard = Ports.requestCopy
+        , requestBell = Ports.requestBellTerminal
+        , requestNotify = Ports.requestNotifyTerminal
         , requestRunTerminal =
             \code ->
                 Ports.requestRunTerminal <|

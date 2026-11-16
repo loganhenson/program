@@ -56,7 +56,7 @@ openTerminal model =
             Terminal.init model.home (editorPorts model.home) (terminalPorts newId model.home)
 
         newTab =
-            { id = newId, terminal = newTerminalModel, closeArmed = False }
+            { id = newId, terminal = newTerminalModel, closeArmed = False, attention = False }
 
         nextModel =
             { model
@@ -138,7 +138,11 @@ update msg model =
             else
                 let
                     nextModel =
-                        { model | activeTerminalIndex = idx } |> disarmCloses
+                        { model
+                            | activeTerminalIndex = idx
+                            , terminals = List.indexedMap (\i tt -> if i == idx then { tt | attention = False } else tt) model.terminals
+                        }
+                            |> disarmCloses
                 in
                 ( nextModel, emitActiveContext nextModel )
 
@@ -212,16 +216,22 @@ updateTerminal tab terminalMsg model =
         ( nextTerminal, terminalMsgs ) =
             Terminal.update terminalMsg tab.terminal
 
-        nextModel =
-            mapTerminalById tab.id (\t -> { t | terminal = nextTerminal }) model
-
-        commands =
-            Cmd.map (TerminalMsgFor tab.id) terminalMsgs
-
         isActive =
             List.Extra.getAt model.activeTerminalIndex model.terminals
                 |> Maybe.map (\active -> active.id == tab.id)
                 |> Maybe.withDefault False
+
+        -- a bell in a background tab marks the tab until it is looked at
+        rang =
+            nextTerminal.terminal.bells /= tab.terminal.terminal.bells
+
+        nextModel =
+            mapTerminalById tab.id
+                (\t -> { t | terminal = nextTerminal, attention = t.attention || (rang && not isActive) })
+                model
+
+        commands =
+            Cmd.map (TerminalMsgFor tab.id) terminalMsgs
     in
     if nextTerminal.terminal.exited && not tab.terminal.terminal.exited then
         if List.length model.terminals <= 1 then
@@ -327,11 +337,18 @@ terminalTabBar model =
             List.indexedMap
                 (\i tt ->
                     { label =
-                        if String.isEmpty tt.terminal.terminal.title then
-                            "Terminal " ++ String.fromInt (i + 1)
+                        (if tt.attention then
+                            "● "
 
-                        else
-                            tt.terminal.terminal.title
+                         else
+                            ""
+                        )
+                            ++ (if String.isEmpty tt.terminal.terminal.title then
+                                    "Terminal " ++ String.fromInt (i + 1)
+
+                                else
+                                    tt.terminal.terminal.title
+                               )
                     , tooltip = Just tt.id
                     , closeArmed = tt.closeArmed
                     }
