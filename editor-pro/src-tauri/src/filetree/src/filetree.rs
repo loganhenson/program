@@ -1,5 +1,3 @@
-extern crate serde_json;
-
 use std::{
   collections::HashSet,
   fs::metadata,

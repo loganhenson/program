@@ -1,9 +1,24 @@
-@import "tailwindcss/base";
-@import "tailwindcss/components";
+/* Tailwind 4, imported piece by piece and without cascade layers.
 
-@import "vterm.css";
+   `@import "tailwindcss"` would put the reset and the utilities in
+   `@layer`s, and layered rules lose to every un-layered rule regardless of
+   specificity or order: vterm.css (`* { border-color: transparent }`) and
+   the <style> elements Elm injects for the editor and the terminal would
+   then override utilities like `border-blue-400`. Importing the pieces
+   un-layered keeps the Tailwind 3 cascade: reset, vterm.css, utilities,
+   decided by specificity and source order. */
+@import "tailwindcss/theme.css";
+@import "tailwindcss/preflight.css";
+@import "./tailwind-v3-compat.css";
 
-@import "tailwindcss/utilities";
+/* Custom colors (white, lightgray...) and the files to scan for class
+   names; some of them are Elm sources outside this directory. */
+@config "../tailwind.config.js";
+
+@import "./vterm.css";
+
+/* source(none): scan only the files listed in tailwind.config.js */
+@import "tailwindcss/utilities.css" source(none);
 
 /* Kill the macOS rubber-band scroll on every scroll container — this is
    a native app, not a web page, and the bounce makes the UI feel like
@@ -12,6 +27,3 @@
 html, body, * {
   overscroll-behavior: none;
 }
-
-
-

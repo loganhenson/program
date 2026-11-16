@@ -20,7 +20,7 @@ use std::{
 };
 use tauri::{
   menu::{Menu, PredefinedMenuItem, Submenu},
-  AppHandle, Emitter, Listener, Manager, WebviewWindow, Wry,
+  AppHandle, Emitter, Listener, Manager, WebviewWindow,
 };
 use tauri_plugin_store::StoreExt;
 use terminal::{parse::TerminalCommand, terminal::Size};
@@ -75,7 +75,7 @@ type Workspaces = Arc<Mutex<HashMap<String, WorkspaceState>>>;
 
 type SharedRecents = Arc<Mutex<RecentProjects>>;
 
-fn load_recents(app: &AppHandle<Wry>) -> SharedRecents {
+fn load_recents(app: &AppHandle) -> SharedRecents {
   let paths = match app.store(STORE_FILE) {
     Ok(store) => store
       .get(STORE_KEY)
@@ -89,7 +89,7 @@ fn load_recents(app: &AppHandle<Wry>) -> SharedRecents {
   Arc::new(Mutex::new(RecentProjects::from_paths(paths)))
 }
 
-fn save_recents(app: &AppHandle<Wry>, recents: &SharedRecents) {
+fn save_recents(app: &AppHandle, recents: &SharedRecents) {
   let snapshot: Vec<String> = recents.lock().unwrap().paths().to_vec();
   match app.store(STORE_FILE) {
     Ok(store) => {
@@ -133,7 +133,7 @@ const MAX_LINE_LENGTH: usize = 500;
 /// drift between the three caps as the others are tuned.
 const MAX_FILE_BYTES: u64 = (MAX_FILE_LINES as u64) * (MAX_LINE_LENGTH as u64 + 1);
 
-fn emit_notification(window: &WebviewWindow<Wry>, type_: &str, message: String) {
+fn emit_notification(window: &WebviewWindow, type_: &str, message: String) {
   let payload = serde_json::json!({
     "source": "Editor",
     "type": type_,
@@ -152,7 +152,7 @@ fn emit_notification(window: &WebviewWindow<Wry>, type_: &str, message: String) 
 fn build_file_watcher(
   path: &Path,
   workspace_id: String,
-  window: WebviewWindow<Wry>,
+  window: WebviewWindow,
 ) -> notify::Result<RecommendedWatcher> {
   let watched_path = path.to_path_buf();
   let path_for_callback = watched_path.clone();
@@ -393,6 +393,7 @@ fn main() {
   let tools_for_setup = tools.clone();
 
   tauri::Builder::default()
+    .runtime(tauri_runtime_wry::Wry::default())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_dialog::init())
@@ -444,10 +445,10 @@ fn main() {
 }
 
 fn bootstrap(
-  window: WebviewWindow<Wry>,
+  window: WebviewWindow,
   tools: SharedTools,
   recents: SharedRecents,
-  app: AppHandle<Wry>,
+  app: AppHandle,
   workspaces: Workspaces,
 ) {
   // One clone per listener — Tauri requires owned `'static` data inside.
@@ -913,7 +914,7 @@ fn bootstrap(
 /// events both carry `workspaceId` AND `terminalId` so Elm can route to
 /// the specific terminal model regardless of which is active.
 fn spawn_terminal_for_workspace(
-  window: &WebviewWindow<Wry>,
+  window: &WebviewWindow,
   workspace_id: String,
   terminal_id: String,
   directory: String,
@@ -976,7 +977,7 @@ fn spawn_terminal_for_workspace(
 /// dropped from the map) closes the worker channels and lets all threads
 /// exit cleanly. Output trees are stamped with `workspaceId`.
 fn spawn_filetree_worker_for_workspace(
-  window: &WebviewWindow<Wry>,
+  window: &WebviewWindow,
   workspace_id: String,
 ) -> Sender<String> {
   let (ft_tx, ft_rx) = mpsc::channel::<FileTreeAndFlat>();

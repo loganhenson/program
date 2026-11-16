@@ -70,6 +70,32 @@ jobs:
         working-directory: editor-pro/src-tauri/src/filetree
         run: cargo test --no-fail-fast
 
+  terminal-e2e:
+    name: Terminal vs xterm.js (differential fuzz)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: terminal-test/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: terminal-server
+
+      # Random escape sequences go through the real parser and the real Elm
+      # terminal, and through xterm.js; the screens must match cell for cell.
+      - name: terminal-test — install + e2e
+        working-directory: terminal-test
+        run: |
+          npm ci
+          npm run e2e
+
   build-check:
     name: Tauri build check (${{ matrix.app }})
     runs-on: macos-latest

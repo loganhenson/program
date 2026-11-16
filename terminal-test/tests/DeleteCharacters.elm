@@ -45,7 +45,9 @@ suite =
                     |> Expect.all
                         [ \content ->
                             Expect.equal
-                                ("aZd                                                                            \n"
+                                -- the rest of the line moves left and a blank fills in at the right margin:
+                                -- the row stays 80 columns wide
+                                ("aZd                                                                             \n"
                                     ++ "                                                                                \n"
                                     ++ "                                                                                \n"
                                     ++ "                                                                                "
@@ -86,7 +88,7 @@ suite =
                     |> Expect.all
                         [ \content ->
                             Expect.equal
-                                ("aZ                                                                            \n"
+                                ("aZ                                                                              \n"
                                     ++ "                                                                                \n"
                                     ++ "                                                                                \n"
                                     ++ "                                                                                "

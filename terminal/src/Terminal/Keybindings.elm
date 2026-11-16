@@ -1,10 +1,9 @@
 module Terminal.Keybindings exposing (..)
 
-import Editor.Lib
 import Editor.RawKeyboard exposing (RawKey)
-import List.Extra
-import Terminal exposing (getBuffer, updateTerminalEditor)
-import Terminal.Input exposing (evaluateKeyboardEvent)
+import Terminal exposing (scrollToBottom)
+import Terminal.Input exposing (encodeKey, keyboardState)
+import Terminal.Screen
 import Terminal.Types exposing (Model, Msg, Terminal, TerminalBuffer(..))
 
 
@@ -26,70 +25,28 @@ isPrimaryBuffer activeBuffer =
 handleKeybindings : RawKey -> Model -> ( Model, Cmd Msg )
 handleKeybindings key model =
     let
-        ( editor, scrollRegion ) =
-            getBuffer model.terminal
-
-        msgs =
-            if key.metaKey && key.code == "KeyK" then
-                Cmd.none
-
-            else if key.metaKey && key.code == "KeyQ" then
-                model.ports.requestQuit ()
-
-            else if key.metaKey && key.code == "KeyC" then
-                model.ports.requestCopyTerminal ()
-
-            else if key.metaKey && key.code == "KeyV" then
-                model.ports.requestPasteTerminal ()
-
-            else
-                case evaluateKeyboardEvent key of
-                    Nothing ->
-                        Cmd.none
-
-                    Just input ->
-                        model.ports.requestRunTerminal input
-
-        nextModel =
-            if key.metaKey && key.code == "KeyK" && isPrimaryBuffer model.terminal.activeBuffer then
-                { model
-                    | terminal =
-                        let
-                            { x, y } =
-                                editor.travelable.cursorPosition
-
-                            term =
-                                model.terminal
-
-                            travelable =
-                                editor.travelable
-
-                            nextRenderableLines =
-                                case List.Extra.getAt y travelable.renderableLines of
-                                    Just currentLine ->
-                                        currentLine :: List.repeat (List.length travelable.renderableLines - 1) (Editor.Lib.createRenderableLine 0 "")
-
-                                    Nothing ->
-                                        travelable.renderableLines
-                        in
-                        updateTerminalEditor
-                            { editor | travelable = { travelable | renderableLines = nextRenderableLines, cursorPosition = { x = x, y = 0 } } }
-                            { term
-                                | scrollback =
-                                    let
-                                        scrollback =
-                                            model.terminal.scrollback
-
-                                        scrollbackTravelable =
-                                            scrollback.travelable
-                                    in
-                                    { scrollback | travelable = { scrollbackTravelable | renderableLines = [] } }
-                            }
-                }
-
-            else
-                model
+        command code =
+            key.metaKey && not (key.ctrlKey || key.altKey) && key.code == code
     in
-    ( nextModel
-    , msgs
-    )
+    if command "KeyK" then
+        -- Clear the screen and the scrollback, keeping the prompt
+        ( { model | terminal = Terminal.Screen.clearKeepingCursorLine model.terminal }, Cmd.none )
+
+    else if command "KeyQ" then
+        ( model, model.ports.requestQuit () )
+
+    else if command "KeyC" then
+        ( model, model.ports.requestCopyTerminal () )
+
+    else if command "KeyV" then
+        ( model, model.ports.requestPasteTerminal () )
+
+    else
+        case encodeKey (keyboardState model.terminal) key of
+            Just input ->
+                ( model
+                , Cmd.batch [ model.ports.requestRunTerminal input, scrollToBottom "terminal-container" ]
+                )
+
+            Nothing ->
+                ( model, Cmd.none )

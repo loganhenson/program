@@ -3,13 +3,18 @@
   "version": "1.0.0",
   "description": "local",
   "devDependencies": {
-    "elm": "^0.19.1-5",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/headless": "^6.0.0",
+    "elm": "^0.19.3-0",
     "elm-live": "^4.0.2",
-    "elm-test": "^0.19.1-revision7"
+    "elm-test": "^0.19.3-0"
   },
   "scripts": {
     "start": "elm-live src/Main.elm --open --start-page=index.html -- --output=main.js",
-    "test": "elm-test"
+    "test": "elm-test",
+    "e2e:build": "cd ../terminal-server && cargo build --bin terminal-headless && cd ../terminal-test && elm make src/Headless.elm --optimize --output e2e/build/headless.js",
+    "e2e": "npm run e2e:build && node e2e/fuzz.js 300",
+    "e2e:live": "npm run e2e:build && node e2e/live.js"
   },
   "repository": {
     "type": "git",

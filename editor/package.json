@@ -4,10 +4,10 @@
   "description": "Editor",
   "dependencies": {},
   "devDependencies": {
-    "elm-format": "^0.8.4",
+    "elm-format": "^0.8.8",
     "elm-live": "^4.0.2",
-    "elm": "^0.19.1-5",
-    "elm-test": "^0.19.1-revision7"
+    "elm": "^0.19.3-0",
+    "elm-test": "^0.19.3-0"
   },
   "scripts": {
     "start": "cd ../editor-test && npx elm-live src/Main.elm --open --start-page=index.html -- --output=main.js",

@@ -34,7 +34,7 @@ view model projectPath =
         "Search..."
         ""
         [ Html.input
-            [ class "w-full p-2 text-gray-900 outline-none"
+            [ class "w-full p-2 text-gray-900 outline-hidden"
             , id "vide-fuzzy-finder-input"
             , spellcheck False
             , onInput

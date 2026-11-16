@@ -2,6 +2,7 @@ import { getPlugin, getPluginNameFromFilePath } from './utils/plugins.js'
 import {readText, writeText} from "@tauri-apps/plugin-clipboard-manager";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { fit, selectedText } from '../../terminal/js/dom.js'
 
 // import {listen} from "@tauri-apps/api/event";
 
@@ -219,7 +220,19 @@ export default {
      */
     window.vide.ports.setActiveContext.subscribe((ctx) => {
       // ctx = { workspaceId: String, activeFile: String|null }
+      const previous = this.data.activeContext
       this.data.activeContext = ctx
+
+      // A new or previously hidden terminal still has the size it had when
+      // it was last visible (or the size every terminal starts with).
+      const switched = ctx.terminalId !== previous.terminalId || ctx.workspaceId !== previous.workspaceId
+      if (switched && ctx.terminalId && this.data.terminalSize) {
+        this.handlers.requestResizeTerminal({
+          workspaceId: ctx.workspaceId,
+          terminalId: ctx.terminalId,
+          ...this.data.terminalSize,
+        })
+      }
     })
 
     window.vide.ports.requestOpenProject.subscribe((directory) => {
@@ -292,25 +305,34 @@ export default {
       this.activateFileOrDirectory(emit, { workspaceId: wsId, path })
     })
 
-    window.vide.ports.requestRunTerminal.subscribe(({ contents }) => {
+    window.vide.ports.requestRunTerminal.subscribe(({ workspaceId, terminalId, contents }) => {
+      // Each terminal stamps its own ids: replies to a program's queries
+      // have to reach that program even when its tab is in the background.
       this.handlers.requestRunTerminal({
-        workspaceId: this.data.activeContext.workspaceId,
-        terminalId: this.data.activeContext.terminalId,
+        workspaceId: workspaceId || this.data.activeContext.workspaceId,
+        terminalId: terminalId || this.data.activeContext.terminalId,
         contents,
       })
     })
 
     window.vide.ports.requestPasteTerminal.subscribe(async () => {
-      this.handlers.requestRunTerminal({
-        workspaceId: this.data.activeContext.workspaceId,
-        terminalId: this.data.activeContext.terminalId,
-        contents: await readText(),
-      })
+      // The terminal decides how to send it (bracketed paste, line endings)
+      const text = await readText()
+      if (text) {
+        window.vide.ports.receiveTerminalPaste.send(text)
+      }
     })
 
     window.vide.ports.requestCopyTerminal.subscribe(async () => {
-      await writeText(window.getSelection().toString().replaceAll("\n", ""))
+      const text = selectedText()
+      if (text) {
+        await writeText(text)
+      }
     })
+
+    // Programs can ask to be told when the terminal gains or loses focus
+    window.addEventListener('focus', () => window.vide.ports.receiveTerminalFocus.send(true))
+    window.addEventListener('blur', () => window.vide.ports.receiveTerminalFocus.send(false))
 
     window.vide.ports.requestSetupTerminalResizeObserver.subscribe(() => {
       let prevWidthIncrement = 0;
@@ -324,14 +346,14 @@ export default {
         // corners clip a few pixels of whatever the last row would land
         // on, so we leave one row of breathing room to guarantee the
         // prompt is never hidden under the curve.
-        let w = Math.floor(terminals[0].contentRect.width / 8.4)
-        let h = Math.max(1, Math.floor(terminals[0].contentRect.height / 24) - 1)
-        let nextWidthIncrement = Math.floor(w * 8.4);
-        let nextHeightIncrement = Math.floor(h * 24);
+        const { width: w, height: h } = fit(terminals[0].contentRect)
+        let nextWidthIncrement = w;
+        let nextHeightIncrement = h;
 
         if (nextWidthIncrement !== prevWidthIncrement || nextHeightIncrement !== prevHeightIncrement) {
           prevWidthIncrement = nextWidthIncrement
           prevHeightIncrement = nextHeightIncrement
+          this.data.terminalSize = { width: w, height: h }
           this.handlers.requestResizeTerminal({
             workspaceId: this.data.activeContext.workspaceId,
             terminalId: this.data.activeContext.terminalId,

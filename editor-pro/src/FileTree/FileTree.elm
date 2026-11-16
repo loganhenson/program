@@ -616,7 +616,7 @@ viewCreatingNewFile newFile maybeError =
         [ fileTreeIcon [] file
         , form [ onSubmit (CreateFile (newFile.path ++ "/" ++ newFile.name)), class "m-0 flex flex-col" ]
             [ input
-                [ class "focus:outline-none focus:shadow-outline bg-lightgray border"
+                [ class "focus:outline-hidden focus:shadow-outline bg-lightgray border"
                 , classList
                     [ ( "border-red-700"
                       , case maybeError of
@@ -654,7 +654,7 @@ viewCreatingNewDirectory newDir maybeError =
         , fileTreeIcon [] fileDirectory
         , form [ onSubmit (CreateDirectory (newDir.path ++ "/" ++ newDir.name)), class "m-0 flex flex-col" ]
             [ input
-                [ class "focus:outline-none focus:shadow-outline bg-lightgray border"
+                [ class "focus:outline-hidden focus:shadow-outline bg-lightgray border"
                 , classList
                     [ ( "border-red-700"
                       , case maybeError of

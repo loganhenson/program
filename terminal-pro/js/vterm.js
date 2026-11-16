@@ -1,6 +1,8 @@
 const terminals = require('./terminals.js')
 import {readText, writeText} from '@tauri-apps/plugin-clipboard-manager'
 import {exit} from '@tauri-apps/plugin-process';
+import {getCurrentWindow} from '@tauri-apps/api/window'
+import {characterWidth, fit, selectedText} from '../../terminal/js/dom.js'
 
 let _debounce = function(ms, fn) {
   let timer;
@@ -22,9 +24,12 @@ module.exports = {
       directory: null,
     },
     // Active terminal id, pushed from Elm via setActiveContext. Used to
-    // stamp outgoing run/resize emits since the ResizeObserver and run
-    // handler don't otherwise know which tab is active.
+    // stamp outgoing resize emits since the ResizeObserver doesn't
+    // otherwise know which tab is active.
     activeContext: { terminalId: null },
+    // The size the visible area currently fits, so a tab that becomes
+    // active can be brought to it without waiting for the window to resize.
+    size: null,
   },
   registerOnRequestRunTerminal(handler) {
     this.handlers.requestRunTerminal = handler
@@ -68,7 +73,15 @@ module.exports = {
      * Ports
      */
     window.vterm.ports.setActiveContext.subscribe((ctx) => {
+      const switched = ctx.terminalId !== this.data.activeContext.terminalId
       this.data.activeContext = ctx
+      getCurrentWindow().setTitle(ctx.title || 'TerminalPro').catch(() => {})
+
+      // A new or previously hidden tab still has the size it had when it was
+      // last visible (or the size every terminal starts with).
+      if (switched && ctx.terminalId && this.data.size) {
+        this.handlers.requestResizeTerminal({ terminalId: ctx.terminalId, ...this.data.size })
+      }
     })
 
     window.vterm.ports.requestOpenTerminal.subscribe((payload) => {
@@ -81,29 +94,42 @@ module.exports = {
       emit('closeTerminal', payload)
     })
 
-    window.vterm.ports.requestRunTerminal.subscribe(({ contents }) => {
+    window.vterm.ports.requestRunTerminal.subscribe(({ terminalId, contents }) => {
+      // Each terminal stamps its own id: replies to a program's queries
+      // have to reach that program even when its tab is in the background.
       this.handlers.requestRunTerminal({
-        terminalId: this.data.activeContext.terminalId,
+        terminalId: terminalId || this.data.activeContext.terminalId,
         contents,
       })
     })
 
     window.vterm.ports.requestPasteTerminal.subscribe(async () => {
-      this.handlers.requestRunTerminal({
-        terminalId: this.data.activeContext.terminalId,
-        contents: await readText(),
-      })
+      // The terminal decides how to send it (bracketed paste, line endings)
+      const text = await readText()
+      if (text) {
+        window.vterm.ports.receiveTerminalPaste.send(text)
+      }
     })
 
     window.vterm.ports.requestCopyTerminal.subscribe(async () => {
-      await writeText(window.getSelection().toString().replaceAll("\n", ""))
+      const text = selectedText()
+      if (text) {
+        await writeText(text)
+      }
+    })
+
+    // OSC 52: a program asked to put text on the clipboard
+    window.vterm.ports.requestWriteClipboard.subscribe(async (text) => {
+      await writeText(text)
     })
 
     window.vterm.ports.requestCharacterWidth.subscribe(() => {
-      window.vterm.ports.receiveCharacterWidth.send(
-          document.getElementById('character-width').getBoundingClientRect().width
-      )
+      window.vterm.ports.receiveCharacterWidth.send(characterWidth())
     })
+
+    // Programs can ask to be told when the terminal gains or loses focus
+    window.addEventListener('focus', () => window.vterm.ports.receiveTerminalFocus.send(true))
+    window.addEventListener('blur', () => window.vterm.ports.receiveTerminalFocus.send(false))
 
     window.vterm.ports.requestQuit.subscribe(async () => {
       await exit()
@@ -121,14 +147,14 @@ module.exports = {
         // corners clip a few pixels of whatever the last row would have
         // landed on, so we leave one row of breathing room to guarantee
         // the prompt is never hidden under the curve.
-        let w = Math.floor(terminals[0].contentRect.width / 8.4)
-        let h = Math.max(1, Math.floor(terminals[0].contentRect.height / 24) - 1)
-        let nextWidthIncrement = Math.floor(w * 8.4);
-        let nextHeightIncrement = Math.floor(h * 24);
+        const { width: w, height: h } = fit(terminals[0].contentRect)
+        let nextWidthIncrement = w;
+        let nextHeightIncrement = h;
 
         if (nextWidthIncrement !== prevWidthIncrement || nextHeightIncrement !== prevHeightIncrement) {
           prevWidthIncrement = nextWidthIncrement
           prevHeightIncrement = nextHeightIncrement
+          this.data.size = { width: w, height: h }
           this.handlers.requestResizeTerminal({
             terminalId: this.data.activeContext.terminalId,
             width: w,

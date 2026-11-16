@@ -53,7 +53,7 @@ openTerminal model =
             "term-" ++ String.fromInt model.terminalCounter
 
         newTerminalModel =
-            Terminal.init model.home (editorPorts model.home) (terminalPorts model.home)
+            Terminal.init model.home (editorPorts model.home) (terminalPorts newId model.home)
 
         newTab =
             { id = newId, terminal = newTerminalModel, closeArmed = False }
@@ -81,19 +81,26 @@ openTerminal model =
 emitActiveContext : Model -> Cmd Msg
 emitActiveContext model =
     let
-        activeId =
+        active =
             List.Extra.getAt model.activeTerminalIndex model.terminals
-                |> Maybe.map .id
     in
     Ports.setActiveContext
         (Json.Encode.object
             [ ( "terminalId"
-              , case activeId of
-                    Just id ->
-                        Json.Encode.string id
+              , case active of
+                    Just tab ->
+                        Json.Encode.string tab.id
 
                     Nothing ->
                         Json.Encode.null
+              )
+
+            -- the window takes the title the shell set for the active tab
+            , ( "title"
+              , active
+                    |> Maybe.map (\tab -> tab.terminal.terminal.title)
+                    |> Maybe.withDefault ""
+                    |> Json.Encode.string
               )
             ]
         )
@@ -111,13 +118,7 @@ update msg model =
                     ( model, Cmd.none )
 
                 Just tab ->
-                    let
-                        ( nextTerminal, terminalMsgs ) =
-                            Terminal.update terminalMsg tab.terminal
-                    in
-                    ( mapTerminalById tab.id (\t -> { t | terminal = nextTerminal }) model
-                    , Cmd.map TerminalMsg terminalMsgs
-                    )
+                    updateTerminal tab terminalMsg model
 
         TerminalMsgFor terminalId terminalMsg ->
             case List.Extra.find (\tt -> tt.id == terminalId) model.terminals of
@@ -125,13 +126,7 @@ update msg model =
                     ( model, Cmd.none )
 
                 Just tab ->
-                    let
-                        ( nextTerminal, terminalMsgs ) =
-                            Terminal.update terminalMsg tab.terminal
-                    in
-                    ( mapTerminalById terminalId (\t -> { t | terminal = nextTerminal }) model
-                    , Cmd.map (TerminalMsgFor terminalId) terminalMsgs
-                    )
+                    updateTerminal tab terminalMsg model
 
         OpenTerminal ->
             openTerminal model
@@ -207,6 +202,47 @@ update msg model =
             ( model, Cmd.none )
 
 
+{-| Run a message through one terminal, then react to what changed: a shell
+that exited closes its tab (and the app with the last one), and a new title
+on the active tab becomes the window title.
+-}
+updateTerminal : TerminalTab -> Terminal.Types.Msg -> Model -> ( Model, Cmd Msg )
+updateTerminal tab terminalMsg model =
+    let
+        ( nextTerminal, terminalMsgs ) =
+            Terminal.update terminalMsg tab.terminal
+
+        nextModel =
+            mapTerminalById tab.id (\t -> { t | terminal = nextTerminal }) model
+
+        commands =
+            Cmd.map (TerminalMsgFor tab.id) terminalMsgs
+
+        isActive =
+            List.Extra.getAt model.activeTerminalIndex model.terminals
+                |> Maybe.map (\active -> active.id == tab.id)
+                |> Maybe.withDefault False
+    in
+    if nextTerminal.terminal.exited && not tab.terminal.terminal.exited then
+        if List.length model.terminals <= 1 then
+            ( nextModel, Cmd.batch [ commands, Ports.requestQuit () ] )
+
+        else
+            case List.Extra.findIndex (\tt -> tt.id == tab.id) model.terminals of
+                Just index ->
+                    update (CloseTerminalConfirmed index) nextModel
+                        |> Tuple.mapSecond (\closing -> Cmd.batch [ commands, closing ])
+
+                Nothing ->
+                    ( nextModel, commands )
+
+    else if isActive && nextTerminal.terminal.title /= tab.terminal.terminal.title then
+        ( nextModel, Cmd.batch [ commands, emitActiveContext nextModel ] )
+
+    else
+        ( nextModel, commands )
+
+
 mapTerminalById : String -> (TerminalTab -> TerminalTab) -> Model -> Model
 mapTerminalById id f model =
     { model
@@ -260,6 +296,8 @@ subscriptions _ =
                         NoOp
             )
         , Sub.map TerminalMsg <| Ports.receiveCharacterWidth Terminal.Types.ReceivedCharacterWidth
+        , Sub.map TerminalMsg <| Ports.receiveTerminalPaste Terminal.Types.ReceivedPaste
+        , Sub.map TerminalMsg <| Ports.receiveTerminalFocus Terminal.Types.ReceivedFocus
         , Sub.map RawKeyboardMsg (RawKeyboard.subscriptions True True)
         ]
 
@@ -288,7 +326,12 @@ terminalTabBar model =
         items =
             List.indexedMap
                 (\i tt ->
-                    { label = "Terminal " ++ String.fromInt (i + 1)
+                    { label =
+                        if String.isEmpty tt.terminal.terminal.title then
+                            "Terminal " ++ String.fromInt (i + 1)
+
+                        else
+                            tt.terminal.terminal.title
                     , tooltip = Just tt.id
                     , closeArmed = tt.closeArmed
                     }

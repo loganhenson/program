@@ -111,6 +111,12 @@ port receiveTerminalOutput : (Json.Encode.Value -> msg) -> Sub msg
 port receiveTerminalResized : (Json.Encode.Value -> msg) -> Sub msg
 
 
+port receiveTerminalPaste : (String -> msg) -> Sub msg
+
+
+port receiveTerminalFocus : (Bool -> msg) -> Sub msg
+
+
 
 -- Receiving
 
