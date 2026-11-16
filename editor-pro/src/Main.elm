@@ -473,7 +473,7 @@ update msg model_ =
                                     False
 
                         nextModel =
-                            WL.mapWorkspaceByPath workspaceId (updateWorkspaceFileTree treeAndFlat) model
+                            WL.mapWorkspaceByPath workspaceId (Lib.updateWorkspaceFileTree treeAndFlat) model
 
                         cmds =
                             if wasFirstTree then
@@ -1372,39 +1372,6 @@ decodeWorkspaceFileTreeEnvelope envelope =
 
                 Err e ->
                     Err e
-
-
-updateWorkspaceFileTree : FileTree.Types.FileTreeAndFlat -> Workspace -> Workspace
-updateWorkspaceFileTree treeAndFlat ws =
-    case ws.fileTree of
-        Nothing ->
-            -- Terminals are created lazily via openTerminalInWorkspace
-            -- (triggered by WorkspaceInitialized), not here.
-            { ws
-                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
-                , fileTreeShowing = True
-                , terminalShowing = True
-            }
-
-        Just oldTree ->
-            let
-                activeFileDeleted =
-                    case ws.activeFile of
-                        Just af ->
-                            not (List.member af (List.map .path treeAndFlat.flat))
-
-                        Nothing ->
-                            False
-            in
-            { ws
-                | fileTree = Just (FileTree.FileTree.refresh oldTree treeAndFlat)
-                , editor =
-                    if activeFileDeleted then
-                        Nothing
-
-                    else
-                        ws.editor
-            }
 
 
 main : Program Flags Model Msg

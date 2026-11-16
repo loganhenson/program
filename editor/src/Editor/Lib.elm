@@ -36,34 +36,40 @@ maxUndoHistory =
     200
 
 
+{-| Put the state the editor is in into the history of its file, unless the
+history already has that text where it stands.
+
+The history is a list of states, newest first, and the place it stands at:
+0 after an edit, further back after undo.
+
+  - Moving the cursor is not a change. Every line the cursor passed used to
+    be recorded as a state of its own, so that moving through a file pushed
+    the actual edits out of the history.
+  - An edit made after undoing starts from there: what was undone is dropped,
+    as in every editor, instead of staying ahead of the new edit.
+
+-}
+recordInHistory : Travelable -> ( Int, List Travelable ) -> ( Int, List Travelable )
+recordInHistory travelable ( index, history ) =
+    let
+        recorded =
+            List.Extra.getAt index history
+                |> Maybe.map (\state -> state.renderableLines == travelable.renderableLines)
+                |> Maybe.withDefault False
+    in
+    if recorded then
+        ( index, history )
+
+    else
+        ( 0
+        , (travelable :: List.drop index history)
+            |> List.take maxUndoHistory
+        )
+
+
 snapshotTravelableHistory : Model -> Model
 snapshotTravelableHistory model =
-    let
-        nextHistories =
-            case getCurrentHistoryIndexAndHistoryByFile model.file model of
-                Just ( index, history ) ->
-                    case Just model.travelable == List.Extra.getAt index history of
-                        True ->
-                            model.histories
-
-                        False ->
-                            let
-                                ( head, tail ) =
-                                    List.Extra.splitAt index history
-
-                                capped =
-                                    List.concat [ head, [ model.travelable ], tail ]
-                                        |> List.take maxUndoHistory
-                            in
-                            Dict.update
-                                model.file
-                                (always (Just ( index, capped )))
-                                model.histories
-
-                Nothing ->
-                    model.histories
-    in
-    { model | histories = nextHistories }
+    { model | histories = Dict.update model.file (Maybe.map (recordInHistory model.travelable)) model.histories }
 
 
 changeFile : Model -> String -> String -> ( Model, Cmd Editor.Msg.Msg )
@@ -296,7 +302,9 @@ goForwardInHistory ( model, cmds ) =
             Dict.update nextModel.file
                 (Maybe.map
                     (\( index, history ) ->
-                        ( min (List.length history - 1) index + 1, history )
+                        -- never past the oldest state: from there on nothing
+                        -- that was typed could be undone any more
+                        ( min (List.length history - 1) (index + 1), history )
                     )
                 )
                 nextModel.histories
@@ -504,23 +512,21 @@ updateEditor model ( nextModel, msg ) =
                 _ ->
                     nextModel.travelable
 
+        -- A state is recorded when the cursor leaves a line (not at every
+        -- key), and never while moving through the history itself.
+        leftTheLine =
+            nextModel.travelable.cursorPosition.y /= model.travelable.cursorPosition.y
+
         updatedNextHistory =
-            case ( nextModel.travelable.cursorPosition.y /= model.travelable.cursorPosition.y, nextCurrentHistoryIndexAndHistory ) of
-                ( True, Just ( nextHistoryIndex, nextHistory ) ) ->
-                    let
-                        ( head, tail ) =
-                            List.Extra.splitAt nextHistoryIndex nextHistory
+            case nextCurrentHistoryIndexAndHistory of
+                Just indexAndHistory ->
+                    if leftTheLine && not hasHistoryChange then
+                        Just (recordInHistory nextTravelable indexAndHistory)
 
-                        capped =
-                            List.concat [ head, [ nextTravelable ], tail ]
-                                |> List.take maxUndoHistory
-                    in
-                    Just ( nextHistoryIndex, capped )
+                    else
+                        Just indexAndHistory
 
-                ( False, Just ( nextHistoryIndex, nextHistory ) ) ->
-                    Just ( nextHistoryIndex, nextHistory )
-
-                _ ->
+                Nothing ->
                     Nothing
 
         requestChangeMessage =

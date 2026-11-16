@@ -169,7 +169,17 @@ activateInWorkspace ws path updateFileHistory =
                     )
 
                 Nothing ->
-                    ( nextWs, Cmd.none )
+                    -- There is no editor to show it in: the file that was
+                    -- open was deleted. Ask for the file as for one that was
+                    -- never opened (the answer makes an editor). This used
+                    -- to do nothing at all, so that after a deletion no file
+                    -- opened before could be opened again.
+                    ( { nextWs | fileHistory = List.filter (first >> (/=) path) nextFileHistory }
+                    , Cmd.batch
+                        [ Ports.requestActivateFileOrDirectory path
+                        , Cmd.map FileTreeMsg fileTreeMsgs
+                        ]
+                    )
 
         Nothing ->
             ( nextWs
@@ -178,6 +188,33 @@ activateInWorkspace ws path updateFileHistory =
                 , Cmd.map FileTreeMsg fileTreeMsgs
                 ]
             )
+
+
+{-| A new tree for a project: the first one, or one after something changed
+on disk.
+
+The open file stays open whatever the tree says. A file can be open without
+being in the tree (one inside `dist/` or `node_modules/` found through the
+file finder, or one past the limit of what a tree holds), and the tree is
+sent again after any change in the project, including the editor's own save:
+closing the editor for a file "missing" from it threw unsaved work away. That
+a file was deleted is said by the backend, which watches the open file.
+
+-}
+updateWorkspaceFileTree : FileTree.Types.FileTreeAndFlat -> Workspace -> Workspace
+updateWorkspaceFileTree treeAndFlat ws =
+    case ws.fileTree of
+        Nothing ->
+            -- Terminals are created lazily via openTerminalInWorkspace
+            -- (triggered by WorkspaceInitialized), not here.
+            { ws
+                | fileTree = Just (FileTree.FileTree.init treeAndFlat Nothing)
+                , fileTreeShowing = True
+                , terminalShowing = True
+            }
+
+        Just oldTree ->
+            { ws | fileTree = Just (FileTree.FileTree.refresh oldTree treeAndFlat) }
 
 
 {-| Open a project directory. Just fires the port — Rust canonicalizes
