@@ -8,7 +8,15 @@ const DEFAULT_CHARACTER_WIDTH = 8.4
 export function characterWidth() {
   const measure = document.getElementById('character-width')
   const width = measure ? measure.getBoundingClientRect().width : 0
-  return width > 0 ? width : DEFAULT_CHARACTER_WIDTH
+  if (width > 0) {
+    // The stylesheet places cells and the cursor with this. It is not quite
+    // the `ch` unit: text is laid out with the width the engine actually
+    // gives a character, which is rounded differently, and over a hundred
+    // columns the difference adds up to most of a pixel.
+    document.documentElement.style.setProperty('--terminal-cell-width', width + 'px')
+    return width
+  }
+  return DEFAULT_CHARACTER_WIDTH
 }
 
 // How many rows and columns fit in an area of the given size. One row is left
@@ -155,11 +163,10 @@ export function installLinkHandling(open) {
   })
 }
 
-// The terminal bell. With the window in front it is a short, quiet tone;
-// otherwise `attention` is called (bounce the dock icon, flash the taskbar).
+// The terminal bell. With the window in front `ring` is called (play the alert
+// sound); otherwise `attention` (bounce the dock icon, flash the taskbar).
 // A program ringing the bell in a loop gets one ring every 200ms.
-export function createBell(attention) {
-  let audio = null
+export function createBell({ ring, attention }) {
   let last = 0
 
   return () => {
@@ -169,24 +176,10 @@ export function createBell(attention) {
     }
     last = now
 
-    if (!document.hasFocus()) {
+    if (document.hasFocus()) {
+      ring()
+    } else {
       attention()
-      return
-    }
-
-    try {
-      audio = audio || new (window.AudioContext || window.webkitAudioContext)()
-      const oscillator = audio.createOscillator()
-      const gain = audio.createGain()
-      oscillator.type = 'sine'
-      oscillator.frequency.value = 660
-      gain.gain.setValueAtTime(0.06, audio.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.12)
-      oscillator.connect(gain).connect(audio.destination)
-      oscillator.start()
-      oscillator.stop(audio.currentTime + 0.12)
-    } catch (error) {
-      // no audio device, or audio not allowed yet: stay silent
     }
   }
 }

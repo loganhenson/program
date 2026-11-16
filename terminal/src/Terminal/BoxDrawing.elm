@@ -1,4 +1,4 @@
-module Terminal.BoxDrawing exposing (className, isDrawn, styles)
+module Terminal.BoxDrawing exposing (Layer, className, isDrawn, layers, styles)
 
 {-| Box drawing lines and block elements are drawn by the terminal instead of
 being taken from the font.
@@ -10,10 +10,8 @@ edge of its cell.
 
 A cell with such a character keeps the character as (invisible) text, so it
 can still be selected and copied, and gets a class from `className`; `styles`
-has the rule that draws it for every character.
-
-Not drawn, and left to the font: double lines (U+2550-U+256C) and diagonals
-(U+2571-U+2573).
+has the rule that draws it for every character. Each character is a handful
+of `Layer`s: rectangles (or a gradient) placed in the cell.
 
 -}
 
@@ -27,13 +25,11 @@ type alias Layer =
     }
 
 
-{-| U+2500-U+259F, without the double lines and the diagonals.
+{-| The Box Drawing and Block Elements blocks, U+2500-U+259F.
 -}
 isDrawn : Int -> Bool
 isDrawn code =
-    (code >= 0x2500 && code <= 0x254F)
-        || (code >= 0x256D && code <= 0x2570)
-        || (code >= 0x2574 && code <= 0x259F)
+    code >= 0x2500 && code <= 0x259F
 
 
 className : Int -> String
@@ -163,6 +159,16 @@ layers code =
             0x2570 ->
                 arc False True
 
+            -- diagonals
+            0x2571 ->
+                [ diagonal "to top left" ]
+
+            0x2572 ->
+                [ diagonal "to top right" ]
+
+            0x2573 ->
+                [ diagonal "to top left", diagonal "to top right" ]
+
             _ ->
                 case armsOf code of
                     Just ( ( up, right ), ( down, left ) ) ->
@@ -172,8 +178,8 @@ layers code =
                         []
 
 
-{-| How heavy the line is towards the top, right, bottom and left of the
-cell: 0 none, 1 light, 2 heavy.
+{-| The line towards the top, right, bottom and left of the cell: 0 none,
+1 light, 2 heavy, 3 double.
 -}
 armsOf : Int -> Maybe ( ( Int, Int ), ( Int, Int ) )
 armsOf code =
@@ -194,6 +200,21 @@ armsOf code =
                         ++ "01110112021102120121012202210222"
                         ++ "11011102120112022101210222012202"
                         ++ "1111111212111212211111212121211222111122122122121222212222212222"
+                    )
+
+            else if code >= 0x2550 && code <= 0x256C then
+                Just
+                    ( code - 0x2550
+                    , "03033030"
+                        ++ "031001300330"
+                        ++ "001300310033"
+                        ++ "130031003300"
+                        ++ "100330013003"
+                        ++ "131031303330"
+                        ++ "101330313033"
+                        ++ "031301310333"
+                        ++ "130331013303"
+                        ++ "131331313333"
                     )
 
             else if code >= 0x2574 && code <= 0x257F then
@@ -227,38 +248,113 @@ thickness weight =
         1
 
 
-{-| Each arm runs from its edge of the cell to the middle, and a little past
-it so that it meets the arms it crosses.
+{-| Each arm runs from its edge of the cell towards the middle. How far it
+goes depends on what it meets there, so that corners are square, a line that
+ends on a double line stops at it, and the two lines of a double line turn a
+corner side by side instead of crossing.
 -}
 arms : Int -> Int -> Int -> Int -> List Layer
 arms up right down left =
-    let
-        widest a b =
-            if a == 0 && b == 0 then
-                0
-
-            else
-                max (thickness a) (thickness b) / 2
-
-        pastVertical =
-            widest up down
-
-        pastHorizontal =
-            widest left right
-
-        arm weight layer =
-            if weight == 0 then
-                []
-
-            else
-                [ layer (px (thickness weight)) ]
-    in
     List.concat
-        [ arm up (\t -> rect t (half pastHorizontal) "50%" "0")
-        , arm down (\t -> rect t (half pastHorizontal) "50%" "100%")
-        , arm left (\t -> rect (half pastVertical) t "0" "50%")
-        , arm right (\t -> rect (half pastVertical) t "100%" "50%")
+        [ arm False False up down left right
+        , arm False True down up left right
+        , arm True False left right up down
+        , arm True True right left up down
         ]
+
+
+{-| One arm. `horizontal` and `towardsEnd` say which (towards the end is right
+or down), `opposite` is the arm on the other side of the middle, `before` and
+`after` are the two arms it crosses (above and below a horizontal arm, left
+and right of a vertical one).
+-}
+arm : Bool -> Bool -> Int -> Int -> Int -> Int -> List Layer
+arm horizontal towardsEnd weight opposite before after =
+    let
+        edge =
+            if towardsEnd then
+                "100%"
+
+            else
+                "0"
+
+        -- a line `offset` pixels to the side of the middle, reaching `past`
+        -- pixels beyond the middle of the cell
+        line size offset past =
+            let
+                across =
+                    "calc(50% + " ++ px offset ++ ")"
+            in
+            if horizontal then
+                rect (half past) (px size) edge across
+
+            else
+                rect (px size) (half past) across edge
+    in
+    if weight == 0 then
+        []
+
+    else if weight == 3 then
+        let
+            reach near far =
+                if near == 3 then
+                    -- the inside of a corner
+                    -0.5
+
+                else if near /= 0 then
+                    0.5
+
+                else if far == 3 then
+                    -- the outside of a corner
+                    1.5
+
+                else if far /= 0 then
+                    0.5
+
+                else
+                    0
+        in
+        [ line 1 -1 (reach before after), line 1 1 (reach after before) ]
+
+    else
+        let
+            past =
+                if before == 3 || after == 3 then
+                    if opposite /= 0 then
+                        -- crosses the double line
+                        0
+
+                    else if before /= 0 && after /= 0 then
+                        -- ends on the double line
+                        -0.5
+
+                    else
+                        -- turns a corner with it
+                        1.5
+
+                else if before == 0 && after == 0 then
+                    0
+
+                else
+                    max (thickness before) (thickness after) / 2
+        in
+        [ line (thickness weight) 0 past ]
+
+
+{-| A line from corner to corner. The middle of a gradient that runs towards
+one corner passes through the two other corners.
+-}
+diagonal : String -> Layer
+diagonal direction =
+    { image =
+        "linear-gradient("
+            ++ direction
+            ++ ",transparent calc(50% - 0.6px),currentColor calc(50% - 0.6px),currentColor calc(50% + 0.6px),transparent calc(50% + 0.6px))"
+    , width = "100%"
+    , height = "100%"
+    , x = "0"
+    , y = "0"
+    }
 
 
 dashes : Bool -> Float -> Int -> List Layer
@@ -311,10 +407,10 @@ arc down right =
         ring =
             "radial-gradient(circle at "
                 ++ center
-                ++ ",transparent calc(0.5ch - 0.5px),currentColor calc(0.5ch - 0.5px),currentColor calc(0.5ch + 0.5px),transparent calc(0.5ch + 0.5px))"
+                ++ ",transparent calc(var(--terminal-cell-width, 1ch) / 2 - 0.5px),currentColor calc(var(--terminal-cell-width, 1ch) / 2 - 0.5px),currentColor calc(var(--terminal-cell-width, 1ch) / 2 + 0.5px),transparent calc(var(--terminal-cell-width, 1ch) / 2 + 0.5px))"
 
         size =
-            "calc(0.5ch + 0.5px)"
+            "calc(var(--terminal-cell-width, 1ch) / 2 + 0.5px)"
     in
     [ { image = ring
       , width = size
@@ -327,13 +423,13 @@ arc down right =
                 "0"
       , y =
             if down then
-                "calc(50% + 0.25ch - 0.25px)"
+                "calc(50% + var(--terminal-cell-width, 1ch) / 4 - 0.25px)"
 
             else
-                "calc(50% - 0.25ch + 0.25px)"
+                "calc(50% - var(--terminal-cell-width, 1ch) / 4 + 0.25px)"
       }
     , rect "1px"
-        "calc(50% - 0.5ch)"
+        "calc(50% - var(--terminal-cell-width, 1ch) / 2)"
         "50%"
         (if down then
             "100%"

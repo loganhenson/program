@@ -29,6 +29,12 @@ fn preflight() -> Report {
   preflight::run(CHECKS)
 }
 
+/// The terminal bell (BEL): the system alert sound.
+#[tauri::command]
+fn bell() {
+  terminal::bell::ring()
+}
+
 /// One PTY session. `is_active` flips to false on close so any in-flight
 /// emits are silenced before the bridge thread observes channel hangup.
 /// `_kill_tx` dropping triggers terminal-server's kill-watcher to reap
@@ -49,7 +55,7 @@ fn main() {
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_notification::init())
-    .invoke_handler(tauri::generate_handler![preflight])
+    .invoke_handler(tauri::generate_handler![preflight, bell])
     .setup(|app| {
       let window = app.get_webview_window("main").unwrap();
       let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());

@@ -344,11 +344,11 @@ styles =
         line-break: anywhere;
     }
 
-    /* The box characters that are still taken from the font (double lines,
-       diagonals) are stretched to the full height of the row so that they
-       connect from one row to the next. --terminal-box-stretch is the row
-       height divided by the height the font draws them at; the application
-       can measure and set it. */
+    /* Powerline separators come from the font and are stretched to the full
+       height of the row. --terminal-box-stretch is the row height divided by
+       the height the font draws a full-height glyph at; the application can
+       measure and set it. (Box drawing and block elements are drawn by the
+       terminal itself, see Terminal.BoxDrawing.) */
     .terminal-row .box {
         display: inline-block;
         transform: scaleY(var(--terminal-box-stretch, 1.3));
@@ -363,8 +363,10 @@ styles =
         overflow: visible;
     }
 
-    .terminal-row .w1 { width: 1ch; }
-    .terminal-row .w2 { width: 2ch; }
+    /* --terminal-cell-width is the measured width of a character, set by the
+       application (see terminal/js/dom.js); 1ch is close enough without it */
+    .terminal-row .w1 { width: var(--terminal-cell-width, 1ch); }
+    .terminal-row .w2 { width: calc(2 * var(--terminal-cell-width, 1ch)); }
 
     .terminal-cursor {
         position: absolute;
@@ -391,7 +393,7 @@ viewScrollback : Int -> Scrollback -> Html Msg
 viewScrollback width scrollback =
     Html.Keyed.node "div"
         [ class "terminal-scrollback"
-        , style "width" ("calc(" ++ String.fromInt width ++ "ch + 1px)")
+        , style "width" ("calc(" ++ String.fromInt width ++ " * var(--terminal-cell-width, 1ch) + 1px)")
         ]
         ((scrollback.current :: scrollback.blocks)
             |> List.reverse
@@ -620,14 +622,14 @@ viewCursor terminal =
                             " unfocused"
                        )
                 )
-            , style "left" (String.fromInt x ++ "ch")
+            , style "left" ("calc(" ++ String.fromInt x ++ " * var(--terminal-cell-width, 1ch))")
             , style "top" (String.fromInt (screen.cursor.y * lineHeight) ++ "px")
             , style "width"
                 (if wide then
-                    "2ch"
+                    "calc(2 * var(--terminal-cell-width, 1ch))"
 
                  else
-                    "1ch"
+                    "var(--terminal-cell-width, 1ch)"
                 )
             ]
             []

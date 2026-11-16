@@ -7,14 +7,16 @@
     "@xterm/headless": "^6.0.0",
     "elm": "^0.19.3-0",
     "elm-live": "^4.0.2",
-    "elm-test": "^0.19.3-0"
+    "elm-test": "^0.19.3-0",
+    "playwright": "^1.65.1"
   },
   "scripts": {
     "start": "elm-live src/Main.elm --open --start-page=index.html -- --output=main.js",
     "test": "elm-test",
     "e2e:build": "cd ../terminal-server && cargo build --bin terminal-headless && cd ../terminal-test && elm make src/Headless.elm --optimize --output e2e/build/headless.js",
     "e2e": "npm run e2e:build && node e2e/fuzz.js 300 && node e2e/reflow.js 200",
-    "e2e:live": "npm run e2e:build && node e2e/live.js"
+    "e2e:live": "npm run e2e:build && node e2e/live.js",
+    "e2e:browser": "npm run e2e:build && cd ../terminal-pro && npm run elm:optimize && npm run js && npm run css && cd ../terminal-test && node e2e/browser.js"
   },
   "repository": {
     "type": "git",

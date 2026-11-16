@@ -357,9 +357,11 @@ export default {
     installLinkHandling(url => openUrl(url).catch(error => console.log('could not open ' + url + ': ' + error)))
     document.fonts.ready.then(applyBoxStretch)
 
-    // The bell: a quiet tone, or the dock icon bouncing when in the background
-    window.vide.ports.requestBellTerminal.subscribe(createBell(() => {
-      getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => {})
+    // The bell: the system alert sound, or the dock icon bouncing when the
+    // window is in the background
+    window.vide.ports.requestBellTerminal.subscribe(createBell({
+      ring: () => invoke('bell').catch(() => {}),
+      attention: () => getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => {}),
     }))
 
     window.vide.ports.requestNotifyTerminal.subscribe(message => {

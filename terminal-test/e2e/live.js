@@ -88,10 +88,29 @@ async function run(scenario) {
       }
       if (step.wait) await sleep(step.wait)
       if (step.quiet) await quiet(step.quiet, step.timeout)
+      if (step.resize) {
+        // as in the app: the PTY is resized (the shell gets SIGWINCH) and the
+        // terminal is told its new size
+        // The reference is resized at the same point in the output: whatever
+        // the program writes from here on is for the new size. (Resize after
+        // the program has gone quiet, or its last output is misplaced.)
+        marks.push({ resize: step.resize, bytes: fs.existsSync(rawLog) ? fs.statSync(rawLog).size : 0 })
+        lastOutput = Date.now()
+        child.stdin.write(JSON.stringify({ resize: { height: step.resize[0], width: step.resize[1] } }) + '\n')
+        ours.resize(step.resize[0], step.resize[1])
+      }
       if (step.send) send(step.send)
       if (step.key) ours.key(step.key), await forwardReplies()
       if (step.paste) ours.send({ paste: step.paste }), await forwardReplies()
       if (step.expect && !step.expect.test(await screen())) problems.push(`expected ${step.expect} on screen`)
+      if (step.expectNot && step.expectNot.test(await screen())) problems.push(`did not expect ${step.expectNot} on screen`)
+      if (step.check) {
+        // a function of everything the terminal holds: returns a problem or nothing
+        const dump = await ours.dump({ scrollback: true })
+        const rows = dump.lines.map(lineText)
+        const problem = step.check({ rows, scrollback: dump.scrollback, text: [...dump.scrollback, ...rows].join('\n'), cursor: dump.cursor, dump })
+        if (problem) problems.push(problem)
+      }
       if (step.snapshot) {
         // Remember the screen and how much output had been written by now, so
         // the reference can be compared at the same point. Only meaningful
@@ -117,15 +136,23 @@ async function run(scenario) {
   const raw = fs.existsSync(rawLog) ? fs.readFileSync(rawLog) : Buffer.alloc(0)
   const differences = []
   let replayed = 0
+  // Scenarios that resize the primary screen set `compare: false`: xterm.js
+  // does not rearrange the line the cursor is on, so the two would differ by
+  // design. They state what they expect with `check` instead.
+  const comparing = scenario.compare !== false
   for (const mark of marks) {
     await reference.write(raw.subarray(replayed, mark.bytes))
     replayed = mark.bytes
-    for (const difference of compareDump(mark.dump, reference, { styles: scenario.styles !== false })) {
-      differences.push(`[${mark.name}] ${difference}`)
+    if (mark.resize) {
+      reference.term.resize(mark.resize[1], mark.resize[0])
+    } else if (comparing) {
+      for (const difference of compareDump(mark.dump, reference, { styles: scenario.styles !== false })) {
+        differences.push(`[${mark.name}] ${difference}`)
+      }
     }
   }
   await reference.write(raw.subarray(replayed))
-  differences.push(...(await compare(ours, reference, { styles: scenario.styles !== false })))
+  if (comparing) differences.push(...(await compare(ours, reference, { styles: scenario.styles !== false })))
   fs.rmSync(path.dirname(rawLog), { recursive: true, force: true })
 
   return { ours, reference, differences, problems, snapshots, raw, bytes: raw.length, screen: await screen(), sent: ours.sent.join('') }
@@ -238,6 +265,105 @@ const scenarios = {
   exit: {
     steps: shell([{ send: 'exit\r' }, { expectExit: true }]),
   },
+
+  // A shell redraws its prompt and the command being typed when the window
+  // changes size. The prompt has to end up on the screen exactly once and the
+  // output above it has to survive, at every size.
+  'resize-prompt': {
+    compare: false,
+    steps: shell([
+      { send: 'echo one; echo two\r' },
+      { waitFor: /^two *$/m },
+      { quiet: 500 },
+      { send: 'echo this-is-a-long-command-line that will need to wrap when the window gets narrow 1234567890' },
+      { quiet: 500, check: promptOnce('typed') },
+      { resize: [24, 40] },
+      { quiet: 900, check: promptOnce('narrowed to 40 columns') },
+      { resize: [24, 100] },
+      { quiet: 900, check: promptOnce('widened to 100 columns') },
+      { resize: [10, 60] },
+      { quiet: 900, check: promptOnce('10 rows of 60 columns') },
+      { resize: [30, 25] },
+      { quiet: 900, check: promptOnce('25 columns') },
+      { resize: [24, 80] },
+      { quiet: 900, check: promptOnce('back to 80 columns') },
+      { send: '\r' },
+      { quiet: 900, check: ({ rows }) => (count(rows.join(''), 'this-is-a-long-command-line that will need to wrap') === 2 ? null : 'the command did not run cleanly after resizing') },
+    ]),
+  },
+
+  // Output that wrapped is wrapped again at the new width and joins back up,
+  // without losing a character.
+  'resize-output': {
+    compare: false,
+    steps: shell([
+      { send: "echo $(seq 1 70) | tr ' ' '-'; echo END-OF-OUTPUT\r" },
+      { waitFor: /^END-OF-OUTPUT/m },
+      { quiet: 500, check: outputIntact('at 80 columns') },
+      { resize: [24, 30] },
+      { quiet: 900, check: outputIntact('narrowed to 30 columns') },
+      { resize: [8, 30] },
+      { quiet: 900, check: outputIntact('8 rows of 30 columns') },
+      { resize: [24, 200] },
+      { quiet: 900, check: outputIntact('widened to 200 columns') },
+      { resize: [24, 80] },
+      { quiet: 900, check: outputIntact('back to 80 columns') },
+    ]),
+  },
+
+  // A full screen program redraws itself for the new size.
+  'resize-vim': {
+    steps: shell([
+      { send: 'vim -u NONE -N\r' },
+      { waitFor: /VIM - Vi IMproved|~/ },
+      { quiet: 500 },
+      { send: ':set number\r' },
+      { send: 'ihello vim\x1byy30p' },
+      { quiet: 500, snapshot: 'vim at 24x80' },
+      { resize: [12, 50] },
+      { quiet: 900, snapshot: 'vim at 12x50', expect: /hello vim/ },
+      { resize: [30, 100] },
+      { quiet: 900, snapshot: 'vim at 30x100', expect: /hello vim/ },
+      { send: ':q!\r' },
+      { quiet: 700 },
+    ]),
+  },
+}
+
+function count(text, part) {
+  return text.split(part).length - 1
+}
+
+// The command being typed is on the screen once (wrapped rows are as wide as
+// the screen, so joining the rows gives the text back), and the output above
+// the prompt is still there.
+function promptOnce(when) {
+  return ({ rows, text }) => {
+    const typed = count(rows.join(''), 'echo this-is-a-long-command-line')
+    if (typed !== 1) return `${when}: the command being typed is on the screen ${typed} times`
+    if (!/^one *$/m.test(text) || !/^two *$/m.test(text)) return `${when}: output above the prompt was lost`
+    return null
+  }
+}
+
+const SEQUENCE = Array.from({ length: 70 }, (_, i) => i + 1).join('-')
+
+// The long line of output is there exactly once, complete, in the scrollback
+// or on the screen. Scrollback lines are whole lines; rows on the screen are
+// joined where they are wrapped.
+function outputIntact(when) {
+  return ({ dump, scrollback }) => {
+    const lines = [...scrollback]
+    let continues = dump.scrollbackContinues
+    for (const row of dump.lines) {
+      const text = lineText(row)
+      if (continues) lines[lines.length - 1] += text
+      else lines.push(text)
+      continues = row.wrapped
+    }
+    const found = lines.filter(line => line.trimEnd() === SEQUENCE).length
+    return found === 1 ? null : `${when}: the long line of output is there ${found} times as one complete line`
+  }
 }
 
 module.exports = { run, scenarios, shell, prompt, sleep, ROWS, COLS }

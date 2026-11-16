@@ -370,6 +370,33 @@ fn derive_resolved_tools(report: &Report) -> ResolvedTools {
   tools
 }
 
+/// The terminal bell (BEL): the system alert sound.
+#[tauri::command]
+fn bell() {
+  terminal::bell::ring()
+}
+
+/// A project to open as soon as the app has started, instead of showing the
+/// welcome screen: the folder named by `DEV_DIRECTORY` (see `npm start`).
+#[tauri::command]
+fn startup_directory() -> Option<String> {
+  startup_directory_from(std::env::var("DEV_DIRECTORY").ok())
+}
+
+fn startup_directory_from(directory: Option<String>) -> Option<String> {
+  let directory = directory?;
+  let expanded = match directory.strip_prefix("~/") {
+    Some(rest) => home_dir().join(rest),
+    None => PathBuf::from(&directory),
+  };
+  if expanded.is_dir() {
+    Some(expanded.to_string_lossy().to_string())
+  } else {
+    eprintln!("DEV_DIRECTORY is not a directory: {}", directory);
+    None
+  }
+}
+
 #[tauri::command]
 fn preflight(state: tauri::State<'_, SharedTools>) -> Report {
   let report = preflight::run(CHECKS);
@@ -401,7 +428,7 @@ fn main() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .manage(tools.clone())
-    .invoke_handler(tauri::generate_handler![preflight, get_recent_projects])
+    .invoke_handler(tauri::generate_handler![preflight, get_recent_projects, bell, startup_directory])
     .menu(|handle| {
       Menu::with_items(
         handle,
@@ -1114,6 +1141,25 @@ mod tests {
     let roots = vec![PathBuf::from("/tmp")];
     let result = find_project(&tools, "some-project", &roots);
     assert!(result.is_empty());
+  }
+
+  #[test]
+  fn startup_directory_is_only_used_when_it_exists() {
+    let existing = std::env::temp_dir();
+    assert_eq!(
+      startup_directory_from(Some(existing.to_string_lossy().to_string())),
+      Some(existing.to_string_lossy().to_string())
+    );
+    assert_eq!(startup_directory_from(Some("/no/such/directory/anywhere".to_string())), None);
+    assert_eq!(startup_directory_from(None), None);
+  }
+
+  #[test]
+  fn startup_directory_expands_the_home_directory() {
+    assert_eq!(
+      startup_directory_from(Some("~/".to_string())),
+      Some(home_dir().join("").to_string_lossy().to_string())
+    );
   }
 
   #[test]

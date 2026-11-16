@@ -96,6 +96,37 @@ jobs:
           npm ci
           npm run e2e
 
+  terminal-browser:
+    name: Terminal frontend in WebKit
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            terminal-test/package-lock.json
+            terminal-pro/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: terminal-server
+
+      # terminal-pro's built frontend runs in headless WebKit against a real
+      # shell: clicks, copying, links, the bell, drawn box characters, resizing.
+      - name: Install JS deps and WebKit
+        run: |
+          (cd terminal-pro && npm ci)
+          (cd terminal-test && npm ci && npx playwright install webkit)
+
+      - name: terminal-test — browser tests
+        working-directory: terminal-test
+        run: npm run e2e:browser
+
   build-check:
     name: Tauri build check (${{ matrix.app }})
     runs-on: macos-latest

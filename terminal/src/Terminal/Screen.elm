@@ -329,10 +329,9 @@ isPlain cell =
            )
 
 
-{-| Characters that are meant to connect with the rows above and below but are
-drawn by the font, which makes them shorter than a row: the view stretches
-them. (Most box drawing is drawn by the terminal itself, see
-`Terminal.BoxDrawing`.)
+{-| Characters that are meant to fill the height of the row but are drawn by
+the font, which makes them shorter: the view stretches them. (Box drawing and
+block elements are drawn by the terminal itself, see `Terminal.BoxDrawing`.)
 -}
 isStretched : Cell -> Bool
 isStretched cell =
@@ -342,10 +341,8 @@ isStretched cell =
                 code =
                     Char.toCode char
             in
-            -- the box characters still taken from the font (double lines and
-            -- diagonals), and the powerline separators
-            (code >= 0x2500 && code <= 0x259F && not (Terminal.BoxDrawing.isDrawn code))
-                || (code >= 0xE0B0 && code <= 0xE0BF)
+            -- the powerline separators
+            code >= 0xE0B0 && code <= 0xE0BF
 
         _ ->
             False
@@ -2644,12 +2641,20 @@ resizeAlternate size screen =
 
 
 {-| A line as the program printed it, however many rows it takes up. `cursor`
-is the position of the cursor in the line, counted in cells.
+is the position of the cursor in the line, counted in cells; `rows` are the
+rows it occupies now and `cursorAt` where the cursor is in them (row, column).
 -}
 type alias LogicalLine =
     { cells : List Cell
     , cursor : Maybe Int
+    , rows : List Line
+    , cursorAt : Maybe ( Int, Int )
     }
+
+
+emptyLogicalLine : LogicalLine
+emptyLogicalLine =
+    { cells = [], cursor = Nothing, rows = [], cursorAt = Nothing }
 
 
 dropTrailingBlanks : Int -> List Cell -> List Cell
@@ -2676,9 +2681,7 @@ logicalLines : Screen -> List LogicalLine
 logicalLines screen =
     let
         finish pending =
-            { cells = dropTrailingBlanks (Maybe.withDefault 0 pending.cursor) pending.cells
-            , cursor = pending.cursor
-            }
+            { pending | cells = dropTrailingBlanks (Maybe.withDefault 0 pending.cursor) pending.cells }
 
         step ( y, line ) ( pending, done ) =
             let
@@ -2693,20 +2696,27 @@ logicalLines screen =
 
                         else
                             pending.cursor
+                    , rows = pending.rows ++ [ line ]
+                    , cursorAt =
+                        if y == screen.cursor.y then
+                            Just ( List.length pending.rows, screen.cursor.x )
+
+                        else
+                            pending.cursorAt
                     }
             in
             if line.wrapped then
                 ( joined, done )
 
             else
-                ( { cells = [], cursor = Nothing }, finish joined :: done )
+                ( emptyLogicalLine, finish joined :: done )
 
         ( last, lines ) =
             Array.toIndexedList screen.lines
-                |> List.foldl step ( { cells = [], cursor = Nothing }, [] )
+                |> List.foldl step ( emptyLogicalLine, [] )
     in
     List.reverse
-        (if List.isEmpty last.cells && last.cursor == Nothing then
+        (if List.isEmpty last.rows then
             lines
 
          else
@@ -2800,9 +2810,18 @@ wrapLine width logical =
 
 
 {-| Change the size of the primary screen. Lines that were wrapped at the
-right margin are wrapped again at the new width, the cursor stays on the
-character it was on, rows that no longer fit move to the scrollback, and room
-that opens up at the bottom of a full screen is filled from the scrollback.
+right margin are wrapped again at the new width, rows that no longer fit move
+to the scrollback, and room that opens up at the bottom of a full screen is
+filled from the scrollback.
+
+The line the cursor is on is the exception: its rows are kept as they are
+(cut or padded to the new width). That line belongs to whatever is running: a
+shell redraws its prompt and the command being typed when the size changes,
+and to do that it moves the cursor up by the number of rows the line took up
+before. If those rows had been rearranged underneath it, the redraw would
+start on the wrong row and leave a second copy of the prompt behind, or
+overwrite the output above it.
+
 -}
 reflowPrimary : TerminalSize -> Terminal -> ( Screen, Scrollback )
 reflowPrimary size terminal =
@@ -2821,18 +2840,16 @@ reflowPrimary size terminal =
             logicalLines screen
 
         -- the first row may continue a line whose start is in the scrollback
+        -- (unless it is the cursor's line, which is left alone)
         ( joined, scrollbackWithoutPartial ) =
             case ( popScrollback terminal.scrollback, lines ) of
                 ( Just ( partial, rest ), first :: others ) ->
-                    if partial.wrapped then
+                    if partial.wrapped && first.cursorAt == Nothing then
                         let
                             head =
                                 spansToCells partial.spans
                         in
-                        ( { cells = head ++ first.cells
-                          , cursor = Maybe.map ((+) (List.length head)) first.cursor
-                          }
-                            :: others
+                        ( { first | cells = head ++ first.cells } :: others
                         , rest
                         )
 
@@ -2863,7 +2880,15 @@ reflowPrimary size terminal =
                 (\line ( rowsSoFar, cursorSoFar ) ->
                     let
                         ( wrappedRows, position ) =
-                            wrapLine size.width line
+                            case line.cursorAt of
+                                Just ( row, column ) ->
+                                    -- the cursor's line keeps its rows
+                                    ( List.map (resizeLine size.width) line.rows
+                                    , Just ( row, min size.width column )
+                                    )
+
+                                Nothing ->
+                                    wrapLine size.width line
                     in
                     ( rowsSoFar ++ wrappedRows
                     , case position of
@@ -2906,7 +2931,7 @@ reflowPrimary size terminal =
                     Just ( line, rest ) ->
                         let
                             ( wrappedRows, _ ) =
-                                wrapLine size.width { cells = spansToCells line.spans, cursor = Nothing }
+                                wrapLine size.width { emptyLogicalLine | cells = spansToCells line.spans }
 
                             count =
                                 List.length wrappedRows

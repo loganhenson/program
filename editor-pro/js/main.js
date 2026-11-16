@@ -36,4 +36,10 @@ async function proceed() {
   })
 
   await emit('frontend-ready', null)
+
+  // `DEV_DIRECTORY=some/project npm start` opens that project right away
+  const directory = await invoke('startup_directory')
+  if (directory) {
+    await emit('requestOpenProject', { directory })
+  }
 }

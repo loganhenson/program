@@ -18,9 +18,12 @@ the screen, the cursor, the styles and what the terminal sends back.
 ## Compare with xterm.js
 ```bash
 npm run e2e          # differential fuzzing and resize checks, also run by CI
-npm run e2e:live     # real programs (shell, vim, less, man, htop, nano, git)
+npm run e2e:live     # real programs (shell, vim, less, man, htop, nano, git), and resizing them
+npm run e2e:browser  # the real frontend in headless WebKit, also run by CI
 ```
-Both run the real pipeline without a window: bytes go through the Rust parser
+(`npx playwright install webkit` once, to get the browser.)
+
+The first two run the real pipeline without a window: bytes go through the Rust parser
 (`terminal-headless`, built from `terminal-server`), the resulting commands
 through the Elm terminal (`src/Headless.elm`), and the same bytes through
 [xterm.js](https://xtermjs.org) as a reference. The screens have to match cell
@@ -37,6 +40,12 @@ for cell: characters, colors, attributes and cursor position.
 - `e2e/live.js` runs programs in a PTY with the terminal answering their
   queries, and compares snapshots taken along the way. It depends on what is
   installed and on your shell configuration, so it is a local check.
+
+- `e2e/browser.js` loads terminal-pro's built frontend in headless WebKit (the
+  engine Tauri uses on macOS) with only the Tauri IPC replaced, connected to a
+  real shell. It tests what only exists in the browser: which cell a click
+  lands on, what gets copied, links, the bell, how box drawing characters and
+  resized rows are laid out, tabs.
 
 ## When a program misbehaves in the app
 Start the app with `TERMINAL_RAW_LOG=/tmp/terminal.raw` set to record exactly

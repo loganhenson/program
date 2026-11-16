@@ -2,6 +2,7 @@ const terminals = require('./terminals.js')
 import {readText, writeText} from '@tauri-apps/plugin-clipboard-manager'
 import {exit} from '@tauri-apps/plugin-process';
 import {getCurrentWindow, UserAttentionType} from '@tauri-apps/api/window'
+import {invoke} from '@tauri-apps/api/core'
 import {openUrl} from '@tauri-apps/plugin-opener'
 import {isPermissionGranted, requestPermission, sendNotification} from '@tauri-apps/plugin-notification'
 import {applyBoxStretch, characterWidth, createBell, fit, installLinkHandling, selectedText} from '../../terminal/js/dom.js'
@@ -158,9 +159,11 @@ module.exports = {
     // Command+click opens links in the default browser
     installLinkHandling(url => openUrl(url).catch(error => console.log('could not open ' + url + ': ' + error)))
 
-    // The bell: a quiet tone, or the dock icon bouncing when in the background
-    window.vterm.ports.requestBell.subscribe(createBell(() => {
-      getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => {})
+    // The bell: the system alert sound, or the dock icon bouncing when the
+    // window is in the background
+    window.vterm.ports.requestBell.subscribe(createBell({
+      ring: () => invoke('bell').catch(() => {}),
+      attention: () => getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => {}),
     }))
 
     window.vterm.ports.requestNotify.subscribe(message => {

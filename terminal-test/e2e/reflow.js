@@ -8,15 +8,15 @@
 // is deliberately different (history is not dragged back onto a screen that
 // was cleared).
 //
-// xterm.js is a reference here, not a specification. Two things it does are
-// left out of the comparison instead of being copied, and are covered by
-// tests/Reflow.elm:
-//  - it does not rearrange the line the cursor is on, so that line keeps its
-//    old row breaks; every line printed here is finished, so the cursor is
-//    always on an empty line;
-//  - joining rows back together it can put a space inside a pair of wide
-//    characters that were printed next to each other; only narrow characters
-//    are printed here.
+// The line the cursor is on is not rearranged (see `reflowPrimary` in
+// Terminal.Screen for why), and xterm.js leaves it alone as well, though it
+// cuts it differently. Every line printed here is finished, so the cursor is
+// always on an empty line and all the text is subject to rearranging.
+//
+// xterm.js is a reference here, not a specification: joining rows back
+// together it can put a space inside a pair of wide characters that were
+// printed next to each other. That is not copied; only narrow characters are
+// printed here and wide ones are covered by tests/Reflow.elm.
 //
 //   node e2e/reflow.js [CASES] [FIRST_SEED]
 
