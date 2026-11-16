@@ -82,6 +82,42 @@ pub enum TerminalCommand {
     Text(String),
 }
 
+/// The control characters that are sent to the screen inside the text around
+/// them (see `pack`).
+pub const INLINE_CONTROLS: [&str; 5] = ["\r", "\n", "\t", "\u{8}", "\u{7}"];
+
+/// Makes a batch of commands small for sending.
+///
+/// Text never contains control characters, so the commonest of those (the
+/// end of a line above all) can travel inside it: `"a"`, carriage return,
+/// line feed, `"b"` goes as the one string `"a\r\nb"`, and the screen takes
+/// it apart again. As separate commands every line of output was three JSON
+/// values, eleven times the size of what the program had printed, and a web
+/// view holds on to what it was sent for a while: a program printing fast
+/// cost hundreds of megabytes.
+pub fn pack(commands: Vec<TerminalCommand>) -> Vec<TerminalCommand> {
+    let mut packed: Vec<TerminalCommand> = Vec::with_capacity(commands.len() / 2 + 1);
+    let mut text = String::new();
+    for command in commands {
+        match command {
+            TerminalCommand::Text(part) => text.push_str(&part),
+            TerminalCommand::TerminalCommandSequence { ref command } if INLINE_CONTROLS.contains(&command.as_str()) => {
+                text.push_str(command)
+            }
+            other => {
+                if !text.is_empty() {
+                    packed.push(TerminalCommand::Text(std::mem::take(&mut text)));
+                }
+                packed.push(other);
+            }
+        }
+    }
+    if !text.is_empty() {
+        packed.push(TerminalCommand::Text(text));
+    }
+    packed
+}
+
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum StringKind {
     Osc,

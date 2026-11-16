@@ -25,7 +25,7 @@ use tauri::{
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_store::StoreExt;
 use filetree::filetree::Request as TreeRequest;
-use terminal::terminal::{Batch, Flow, Size};
+use terminal::terminal::{Batch, Next, Output, Size};
 
 /// Locks a mutex whether or not a thread panicked while holding it. What
 /// these mutexes guard (maps of what is open) stays usable after a panic,
@@ -130,7 +130,7 @@ struct TerminalSlot {
   resize_tx: Sender<Size>,
   is_active: Arc<AtomicBool>,
   _kill_tx: Sender<()>,
-  _flow: FlowRegistration,
+  _output: OutputRegistration,
 }
 
 impl Drop for TerminalSlot {
@@ -140,49 +140,53 @@ impl Drop for TerminalSlot {
   }
 }
 
-/// The output flow of every open terminal. Kept apart from the workspaces
-/// so that acknowledging output never waits on anything else the app is
-/// doing with them.
-type Flows = Arc<Mutex<HashMap<String, Flow>>>;
+/// The output of every open terminal, waiting for the page to ask for it.
+/// Kept apart from the workspaces so that handing out output never waits on
+/// anything else the app is doing with them.
+type Outputs = Arc<Mutex<HashMap<String, Arc<Output>>>>;
 
-fn flow_key(workspace_id: &str, terminal_id: &str) -> String {
+fn output_key(workspace_id: &str, terminal_id: &str) -> String {
   format!("{}\u{0}{}", workspace_id, terminal_id)
 }
 
-/// A terminal's entry in `Flows`, removed again when the terminal goes away.
-struct FlowRegistration {
-  flows: Flows,
+/// A terminal's entry in `Outputs`, removed again when the terminal goes away.
+struct OutputRegistration {
+  outputs: Outputs,
   key: String,
 }
 
-impl FlowRegistration {
-  fn new(flows: &Flows, key: String, flow: Flow) -> Self {
-    flows
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .insert(key.clone(), flow);
-    FlowRegistration { flows: flows.clone(), key }
+impl OutputRegistration {
+  fn new(outputs: &Outputs, key: String, output: Output) -> Self {
+    locked(outputs).insert(key.clone(), Arc::new(output));
+    OutputRegistration { outputs: outputs.clone(), key }
   }
 }
 
-impl Drop for FlowRegistration {
+impl Drop for OutputRegistration {
   fn drop(&mut self) {
-    self
-      .flows
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .remove(&self.key);
+    locked(&self.outputs).remove(&self.key);
   }
 }
 
-/// The page has taken a batch of a terminal's output. Until it says so, no
-/// more than a couple of batches are sent: a program that prints faster than
-/// the page can draw is slowed down instead of filling memory.
-#[tauri::command]
-fn acknowledge_output(workspace_id: String, terminal_id: String, sequence: u64, flows: tauri::State<Flows>) {
-  let flows = flows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-  if let Some(flow) = flows.get(&flow_key(&workspace_id, &terminal_id)) {
-    flow.acknowledge(sequence);
+/// How long a request for output waits when nothing is being printed,
+/// before it is answered with "nothing yet" and asked again. (A request
+/// that stays open for a minute is given up by the web view.)
+const OUTPUT_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The page asks for a terminal's next batch of output, and says which one
+/// it has taken. See `terminal::terminal::Output` for why it asks instead
+/// of being sent it.
+#[tauri::command(async)]
+fn next_output(workspace_id: String, terminal_id: String, acknowledged: u64, outputs: tauri::State<Outputs>) -> Value {
+  let output = locked(&outputs).get(&output_key(&workspace_id, &terminal_id)).cloned();
+  match output {
+    // not opened yet, or closed
+    None => serde_json::json!({ "state": "unknown" }),
+    Some(output) => match output.next(acknowledged, OUTPUT_WAIT) {
+      Next::Batch(batch) => serde_json::json!({ "state": "output", "sequence": batch.sequence, "data": batch.commands }),
+      Next::Nothing => serde_json::json!({ "state": "waiting" }),
+      Next::Closed => serde_json::json!({ "state": "closed" }),
+    },
   }
 }
 
@@ -684,14 +688,14 @@ fn main() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .manage(tools.clone())
-    .manage(Flows::default())
+    .manage(Outputs::default())
     .invoke_handler(tauri::generate_handler![
       preflight,
       get_recent_projects,
       bell,
       startup_directory,
       dom_dump,
-      acknowledge_output
+      next_output
     ])
     .menu(|handle| {
       Menu::with_items(
@@ -771,6 +775,7 @@ fn bootstrap(
   let workspaces_for_open_term = workspaces.clone();
   let workspaces_for_close_term = workspaces.clone();
   let workspaces_for_create = workspaces.clone();
+  let outputs_for_close_term = window.app_handle().state::<Outputs>().inner().clone();
   let known: KnownContents = Arc::new(Mutex::new(HashMap::new()));
   let known_for_activate = known.clone();
   let known_for_save = known;
@@ -1032,6 +1037,9 @@ fn bootstrap(
     if let Some(ws) = workspaces_guard.get_mut(&workspace_id) {
       ws.terminals.remove(&terminal_id);
     }
+    drop(workspaces_guard);
+    // also the output of a terminal that never started, which has no slot
+    locked(&outputs_for_close_term).remove(&output_key(&workspace_id, &terminal_id));
   });
 
   // Close a project tab. Dropping the entry tears down its watchers +
@@ -1260,62 +1268,30 @@ fn spawn_terminal_for_workspace(
   terminal_id: String,
   directory: String,
 ) -> Option<TerminalSlot> {
-  let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
-  let ws_for_output = workspace_id.clone();
+  let outputs = window.app_handle().state::<Outputs>().inner().clone();
+  let key = output_key(&workspace_id, &terminal_id);
   let ws_for_resize = workspace_id;
-  let term_for_output = terminal_id.clone();
   let term_for_resize = terminal_id;
 
   let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Batch>();
   let (terminal_resize_tx, terminal_resize_rx) = mpsc::channel::<Size>();
 
-  // `None` when no shell could be started: the terminal then says why,
-  // instead of the failure taking every other terminal down with it.
+  // `None` when no shell could be started: the terminal's output then says
+  // why, instead of the failure taking every other terminal down with it.
   let terminal_api = match terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx) {
     Ok(api) => api,
     Err(error) => {
-      let _ = window.emit(
-        "output",
-        serde_json::json!({
-          "workspaceId": ws_for_output,
-          "terminalId": term_for_output,
-          "sequence": 0,
-          "data": terminal::terminal::start_failure_notice(&error),
-        }),
-      );
+      locked(&outputs).insert(key, Arc::new(Output::of_failure(&error)));
       return None;
     }
   };
   let is_active = Arc::new(AtomicBool::new(true));
-  let flow_registration = FlowRegistration::new(
-    window.app_handle().state::<Flows>().inner(),
-    flow_key(&ws_for_output, &term_for_output),
-    terminal_api.flow.clone(),
+  let output_registration = OutputRegistration::new(
+    &outputs,
+    key,
+    Output::new(terminal_output_rx, terminal_api.flow.clone()),
   );
-
-  let is_active_for_output = is_active.clone();
-  let flow_for_output = terminal_api.flow.clone();
-  thread::spawn(move || {
-    for batch in terminal_output_rx {
-      let sent = is_active_for_output.load(Ordering::Relaxed)
-        && window_terminal_output
-          .emit(
-            "output",
-            serde_json::json!({
-              "workspaceId": ws_for_output,
-              "terminalId": term_for_output,
-              "sequence": batch.sequence,
-              "data": batch.commands,
-            }),
-          )
-          .is_ok();
-      // Nobody will acknowledge what was not sent.
-      if !sent {
-        flow_for_output.acknowledge(batch.sequence);
-      }
-    }
-  });
 
   let is_active_for_resize = is_active.clone();
   thread::spawn(move || {
@@ -1338,7 +1314,7 @@ fn spawn_terminal_for_workspace(
     resize_tx: terminal_api.resize_tx,
     is_active,
     _kill_tx: terminal_api.kill_tx,
-    _flow: flow_registration,
+    _output: output_registration,
   })
 }
 

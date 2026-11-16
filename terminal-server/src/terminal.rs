@@ -1,4 +1,4 @@
-use crate::parse::{Stream, TerminalCommand};
+use crate::parse::{pack, Stream, TerminalCommand};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -119,6 +119,62 @@ impl Flow {
     fn on_their_way(&self) -> u64 {
         let state = self.state.0.lock().unwrap();
         state.handed_over - state.acknowledged
+    }
+}
+
+/// A terminal's output, waiting for the screen to ask for it.
+///
+/// The screen asks for the next batch and, in the same breath, says which
+/// one it has taken (`next`). That is the whole of the pacing: nothing is
+/// pushed at a screen that is busy, and no acknowledgement can get lost.
+///
+/// Asked for rather than sent, because of how output would otherwise reach
+/// a web page: as script to evaluate. A browser engine keeps what it
+/// evaluated for a while (WebKit about the last ten seconds of it), which
+/// for a program printing megabytes a second is a gigabyte of memory, held
+/// until something else is evaluated.
+pub struct Output {
+    batches: Mutex<Receiver<Batch>>,
+    flow: Flow,
+}
+
+/// What the screen gets when it asks for output.
+#[derive(Debug)]
+pub enum Next {
+    Batch(Batch),
+    /// Nothing was printed for as long as the screen was willing to wait.
+    Nothing,
+    /// The terminal is gone, and everything it printed has been taken.
+    Closed,
+}
+
+impl Output {
+    pub fn new(batches: Receiver<Batch>, flow: Flow) -> Self {
+        Output {
+            batches: Mutex::new(batches),
+            flow,
+        }
+    }
+
+    /// The output of a terminal that could not be started: what went wrong,
+    /// and then nothing more.
+    pub fn of_failure(error: &str) -> Self {
+        let (batches_tx, batches) = mpsc::channel();
+        let flow = Flow::new();
+        let _ = batches_tx.send(flow.next(start_failure_notice(error)));
+        Output::new(batches, flow)
+    }
+
+    /// The screen has taken every batch up to `acknowledged` and wants the
+    /// next one, waiting for it up to `wait`.
+    pub fn next(&self, acknowledged: u64, wait: Duration) -> Next {
+        self.flow.acknowledge(acknowledged);
+        let batches = self.batches.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match batches.recv_timeout(wait) {
+            Ok(batch) => Next::Batch(batch),
+            Err(RecvTimeoutError::Timeout) => Next::Nothing,
+            Err(RecvTimeoutError::Disconnected) => Next::Closed,
+        }
     }
 }
 
@@ -324,13 +380,13 @@ pub fn start(
                     Ok(more) => bytes = more,
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => {
-                        let _ = output_sender.send(flow.next(commands));
+                        let _ = output_sender.send(flow.next(pack(commands)));
                         break 'batches;
                     }
                 }
             }
 
-            if !commands.is_empty() && output_sender.send(flow.next(commands)).is_err() {
+            if !commands.is_empty() && output_sender.send(flow.next(pack(commands))).is_err() {
                 break 'batches;
             }
         }

@@ -183,3 +183,48 @@ export function createBell({ ring, attention }) {
     }
   }
 }
+
+/**
+ * Keeps asking the backend for a terminal's output and hands each batch on,
+ * until the terminal is closed.
+ *
+ * `next(acknowledged)` asks for the batch after number `acknowledged` and
+ * resolves to { state: 'output', sequence, data } | { state: 'waiting' } |
+ * { state: 'closed' } | { state: 'unknown' }. `deliver(data)` gets each batch.
+ *
+ * Asking for the next batch is also what says the last one was handled, so
+ * output arrives only as fast as it is dealt with: a program that prints
+ * faster than the page draws is slowed down, instead of burying the page
+ * (and the keyboard) under what it printed.
+ */
+export async function pumpOutput(next, deliver) {
+  let acknowledged = 0
+  let misses = 0
+  for (;;) {
+    let answer
+    try {
+      answer = await next(acknowledged)
+    } catch (error) {
+      answer = { state: 'failed' }
+    }
+
+    if (answer && answer.state === 'output') {
+      misses = 0
+      acknowledged = answer.sequence
+      try {
+        deliver(answer.data)
+      } catch (error) {
+        console.error(error)
+      }
+    } else if (answer && answer.state === 'waiting') {
+      misses = 0
+    } else if (answer && answer.state === 'closed') {
+      return
+    } else {
+      // The terminal is not there (yet, or any more), or the request failed.
+      // Asked again for a while, then given up.
+      if (++misses > 40) return
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
+}

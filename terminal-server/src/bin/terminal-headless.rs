@@ -21,7 +21,7 @@
 
 use std::io::{BufRead, Read, Write};
 use std::sync::mpsc;
-use terminal::parse::Stream;
+use terminal::parse::{pack, Stream};
 use terminal::terminal::{start, Size};
 
 fn main() {
@@ -49,7 +49,8 @@ fn parse(chunk_size: Option<usize>) {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     for chunk in bytes.chunks(chunk_size.unwrap_or(usize::MAX).max(1)) {
-        let commands = stream.feed(chunk);
+        // packed, as the apps send them to the screen
+        let commands = pack(stream.feed(chunk));
         writeln!(out, "{}", serde_json::to_string(&commands).unwrap()).unwrap();
     }
 }
@@ -60,7 +61,7 @@ fn chunks() {
     let mut out = stdout.lock();
     for line in std::io::stdin().lock().lines() {
         let chunk: String = serde_json::from_str(&line.unwrap()).unwrap();
-        let commands = stream.feed(chunk.as_bytes());
+        let commands = pack(stream.feed(chunk.as_bytes()));
         writeln!(out, "{}", serde_json::to_string(&commands).unwrap()).unwrap();
     }
 }

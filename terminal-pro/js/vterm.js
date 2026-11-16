@@ -5,7 +5,7 @@ import {getCurrentWindow, UserAttentionType} from '@tauri-apps/api/window'
 import {invoke} from '@tauri-apps/api/core'
 import {openUrl} from '@tauri-apps/plugin-opener'
 import {isPermissionGranted, requestPermission, sendNotification} from '@tauri-apps/plugin-notification'
-import {applyBoxStretch, characterWidth, createBell, fit, installLinkHandling, selectedText} from '../../terminal/js/dom.js'
+import {applyBoxStretch, characterWidth, createBell, fit, installLinkHandling, pumpOutput, selectedText} from '../../terminal/js/dom.js'
 
 // A program asked for a notification (OSC 9 / OSC 777). It is only shown when
 // the window is in the background: with the window in front the user is
@@ -68,9 +68,6 @@ module.exports = {
       console.log(`failed to initialize:` + e)
     }
   },
-  acknowledgeTerminalOutput(payload) {
-    invoke('acknowledge_output', { terminalId: payload.terminalId, sequence: payload.sequence }).catch(() => {})
-  },
   sendOutputToTerminal(payload) {
     // payload = { terminalId, data }
     window.vterm.ports.receiveTerminalOutput.send(payload)
@@ -113,6 +110,12 @@ module.exports = {
     window.vterm.ports.requestOpenTerminal.subscribe(async (payload) => {
       // payload = { terminalId, cwd }
       await emit('openTerminal', payload)
+
+      // Its output is asked for, batch by batch, for as long as it is open.
+      pumpOutput(
+        acknowledged => invoke('next_output', { terminalId: payload.terminalId, acknowledged }),
+        data => this.sendOutputToTerminal({ terminalId: payload.terminalId, data }),
+      )
 
       // A shell starts at 80x24. The size sent when its tab became active
       // (above) can get there before the shell exists and is then dropped,

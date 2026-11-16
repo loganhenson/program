@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
-import { applyBoxStretch, createBell, fit, installLinkHandling, selectedText } from '../../terminal/js/dom.js'
+import { applyBoxStretch, createBell, fit, installLinkHandling, pumpOutput, selectedText } from '../../terminal/js/dom.js'
 
 // A program asked for a notification (OSC 9 / OSC 777). It is only shown when
 // the window is in the background: with the window in front the user is
@@ -164,13 +164,6 @@ export default {
   sendVideError(error) {
     window.vide.ports.receiveVideError.send(error)
   },
-  acknowledgeTerminalOutput(payload) {
-    invoke('acknowledge_output', {
-      workspaceId: payload.workspaceId,
-      terminalId: payload.terminalId,
-      sequence: payload.sequence,
-    }).catch(() => {})
-  },
   sendOutputToTerminal(output) {
     // Rust sends { workspaceId, data } — forward the whole envelope so
     // the Elm side can route the output to the right workspace.
@@ -275,6 +268,12 @@ export default {
     window.vide.ports.requestOpenTerminal.subscribe(async (payload) => {
       // payload = { workspaceId, terminalId }
       await emit('openTerminal', payload)
+
+      // Its output is asked for, batch by batch, for as long as it is open.
+      pumpOutput(
+        acknowledged => invoke('next_output', { workspaceId: payload.workspaceId, terminalId: payload.terminalId, acknowledged }),
+        data => this.sendOutputToTerminal({ workspaceId: payload.workspaceId, terminalId: payload.terminalId, data }),
+      )
 
       // A shell starts at 80x24. The size sent when its tab became active
       // (above) can get there before the shell exists and is then dropped,

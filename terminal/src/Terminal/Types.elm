@@ -219,6 +219,10 @@ type alias Terminal =
     , mouse : MouseState
     , exited : Bool
     , bells : Int
+
+    -- A row of untouched cells as wide as the screen. Every line of output
+    -- needs one when the screen scrolls; they all share this one.
+    , blank : Line
     }
 
 
