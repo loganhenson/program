@@ -40,4 +40,9 @@ type alias Workspace =
     , focused : Focused
     , fuzzyFinder : FuzzyFinder.Model.Model
     , closeArmed : Bool
+
+    -- The open file as it is on disk, as far as the page knows: a path and
+    -- the contents it was last loaded with, or saved with. What is in the
+    -- editor and differs from this has not been saved.
+    , saved : Maybe ( String, String )
     }

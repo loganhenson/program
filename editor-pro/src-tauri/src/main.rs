@@ -728,6 +728,14 @@ fn main() {
         request_quit(app);
       }
     })
+    // The window's close button quits the app, so it asks like Command+Q
+    // does: closing it used to end every project and terminal at once.
+    .on_window_event(|window, event| {
+      if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        api.prevent_close();
+        request_quit(window.app_handle());
+      }
+    })
     .setup(move |app| {
       let app_handle = app.handle().clone();
       let recents = load_recents(&app_handle);

@@ -3,6 +3,7 @@ module Lib exposing (..)
 import Editor
 import Editor.Lib
 import Editor.Msg
+import Editor.RawKeyboard
 import FileTree.FileTree
 import FileTree.Types
 import Json.Encode
@@ -61,9 +62,109 @@ handleEditorMsg m model =
                 ( editor, message ) =
                     Editor.update m prevEditor
             in
-            ( WL.mapActive (\w -> { w | editor = Just editor }) model
+            ( WL.mapActive (\w -> noteSave m { w | editor = Just editor }) model
             , Cmd.map EditorMsg message
             )
+
+
+{-| The text in a project's editor.
+-}
+editorContents : Workspace -> Maybe String
+editorContents ws =
+    ws.editor |> Maybe.map (.travelable >> .renderableLines >> Editor.Lib.renderableLinesToContents)
+
+
+{-| Command+S in the editor saves the file: from then on what is in the
+editor is what is on disk.
+-}
+noteSave : Editor.Msg.Msg -> Workspace -> Workspace
+noteSave msg ws =
+    case msg of
+        Editor.Msg.RawKeyboardMsg (Editor.RawKeyboard.Down key) ->
+            if key.metaKey && key.code == "KeyS" then
+                { ws | saved = Maybe.map2 Tuple.pair ws.activeFile (editorContents ws) }
+
+            else
+                ws
+
+        _ ->
+            ws
+
+
+{-| Whether the editor holds text for this file that is not on disk.
+-}
+hasUnsavedEdits : String -> Workspace -> Bool
+hasUnsavedEdits path ws =
+    case ( ws.saved, editorContents ws ) of
+        ( Just ( savedPath, savedContents ), Just contents ) ->
+            savedPath == path && savedContents /= contents
+
+        _ ->
+            False
+
+
+{-| The open file was changed on disk by something else.
+
+The editor takes the new contents, unless it holds edits that were not saved:
+those are kept (they used to be replaced without a word), and the message
+returned says so.
+
+-}
+externalChange : String -> String -> Workspace -> ( Workspace, Maybe String )
+externalChange path contents ws =
+    case ( ws.activeFile == Just path, ws.editor ) of
+        ( True, Just editor ) ->
+            if editorContents ws == Just contents then
+                ( { ws | saved = Just ( path, contents ) }, Nothing )
+
+            else if hasUnsavedEdits path ws then
+                ( ws
+                , Just (fileName path ++ " was changed on disk. Your unsaved edits were kept; saving will replace what is on disk.")
+                )
+
+            else
+                let
+                    newLines =
+                        Editor.Lib.contentsToRenderableLines contents
+
+                    currentCursor =
+                        editor.travelable.cursorPosition
+
+                    clampedY =
+                        max 0 (min (List.length newLines - 1) currentCursor.y)
+
+                    clampedLineLength =
+                        List.Extra.getAt clampedY newLines
+                            |> Maybe.map (.text >> String.length)
+                            |> Maybe.withDefault 0
+
+                    clampedX =
+                        max 0 (min clampedLineLength currentCursor.x)
+
+                    travelable =
+                        editor.travelable
+
+                    newTravelable =
+                        { travelable
+                            | renderableLines = newLines
+                            , cursorPosition = { x = clampedX, y = clampedY }
+                        }
+                in
+                ( { ws
+                    | editor = Just { editor | travelable = newTravelable }
+                    , fileHistory = addToFileHistory ws.fileHistory path contents
+                    , saved = Just ( path, contents )
+                  }
+                , Nothing
+                )
+
+        _ ->
+            ( ws, Nothing )
+
+
+fileName : String -> String
+fileName path =
+    String.split "/" path |> List.Extra.last |> Maybe.withDefault path
 
 
 {-| Hard cap on remembered file contents. Each entry holds a full file's
