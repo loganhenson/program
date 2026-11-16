@@ -9,11 +9,15 @@
 //!       Prints one JSON array of commands per chunk; parser state carries
 //!       over from chunk to chunk exactly as it does between PTY reads.
 //!
-//!   terminal-headless pty [DIRECTORY]
+//!   terminal-headless pty [DIRECTORY] [--acks]
 //!       Run the user's shell in a PTY. Every batch of commands is printed as
 //!       one line of JSON. Lines read from stdin are JSON messages:
 //!       {"run": "text"} writes to the PTY, {"resize": {"height": 24, "width": 80}}
 //!       resizes it. Set TERMINAL_RAW_LOG=path to also record the raw bytes.
+//!       With --acks output is held back as the apps hold it back: every
+//!       line is {"sequence": n, "commands": [...]}, and after a couple of
+//!       them no more are printed until an {"ack": n} line says that batch n
+//!       was taken.
 
 use std::io::{BufRead, Read, Write};
 use std::sync::mpsc;
@@ -25,9 +29,13 @@ fn main() {
     match args.get(1).map(|s| s.as_str()) {
         Some("parse") => parse(args.get(2).and_then(|size| size.parse().ok())),
         Some("chunks") => chunks(),
-        Some("pty") => pty(args.get(2).cloned().unwrap_or_else(|| "~".to_string())),
+        Some("pty") => {
+            let wait_for_acks = args.iter().any(|arg| arg == "--acks");
+            let directory = args.iter().skip(2).find(|arg| !arg.starts_with("--")).cloned();
+            pty(directory.unwrap_or_else(|| "~".to_string()), wait_for_acks)
+        }
         _ => {
-            eprintln!("usage: terminal-headless parse [CHUNK_SIZE] | chunks | pty [DIRECTORY]");
+            eprintln!("usage: terminal-headless parse [CHUNK_SIZE] | chunks | pty [DIRECTORY] [--acks]");
             std::process::exit(2);
         }
     }
@@ -57,7 +65,7 @@ fn chunks() {
     }
 }
 
-fn pty(directory: String) {
+fn pty(directory: String, wait_for_acks: bool) {
     let (output_tx, output_rx) = mpsc::channel();
     let (resized_tx, resized_rx) = mpsc::channel();
     let api = start(directory, output_tx, resized_tx);
@@ -68,6 +76,7 @@ fn pty(directory: String) {
 
     let run_tx = api.run_tx.clone();
     let resize_tx = api.resize_tx.clone();
+    let flow_for_stdin = api.flow.clone();
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
             let line = match line {
@@ -86,18 +95,33 @@ fn pty(directory: String) {
                     let _ = resize_tx.send(size);
                 }
             }
+            if let Some(sequence) = message.get("ack").and_then(|sequence| sequence.as_u64()) {
+                flow_for_stdin.acknowledge(sequence);
+            }
         }
     });
 
     let stdout = std::io::stdout();
-    for commands in output_rx {
+    for batch in output_rx {
+        let terminal::terminal::Batch { sequence, commands } = batch;
         let exited = commands.iter().any(|command| {
             matches!(command, terminal::parse::TerminalCommand::TerminalCommandSequence { command }
                 if command == terminal::terminal::CHILD_EXITED)
         });
         let mut out = stdout.lock();
-        writeln!(out, "{}", serde_json::to_string(&commands).unwrap()).unwrap();
+        // Whoever reads the output paces it: either by reading stdout at its
+        // own speed (the default), or as a screen would when started with
+        // --acks: each line is then {"sequence": n, "commands": [...]} and
+        // is answered with {"ack": n}.
+        if wait_for_acks {
+            writeln!(out, "{}", serde_json::json!({ "sequence": sequence, "commands": commands })).unwrap();
+        } else {
+            writeln!(out, "{}", serde_json::to_string(&commands).unwrap()).unwrap();
+        }
         out.flush().unwrap();
+        if !wait_for_acks {
+            api.flow.acknowledge(sequence);
+        }
         if exited {
             break;
         }

@@ -46,7 +46,8 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
     if (event === 'openTerminal') {
       // as the backends do: a project's terminal starts in the project, any other in the home directory
       const directory = payload.workspaceId || payload.cwd || process.env.HOME
-      const child = spawn(HEADLESS, ['pty', directory], { env: shellEnv(), cwd: directory, stdio: ['pipe', 'pipe', 'ignore'] })
+      // --acks: output is held back until the page has acknowledged what it was sent, as in the apps
+      const child = spawn(HEADLESS, ['pty', directory, '--acks'], { env: shellEnv(), cwd: directory, stdio: ['pipe', 'pipe', 'ignore'] })
       ptys[(payload.workspaceId || '') + '|' + payload.terminalId] = child
       let pending = ''
       child.stdout.on('data', data => {
@@ -54,7 +55,9 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
         let i
         while ((i = pending.indexOf('\n')) >= 0) {
           const line = pending.slice(0, i); pending = pending.slice(i + 1)
-          if (line) dispatch('output', { terminalId: payload.terminalId, workspaceId: payload.workspaceId, data: JSON.parse(line) })
+          if (!line) continue
+          const { sequence, commands } = JSON.parse(line)
+          dispatch('output', { terminalId: payload.terminalId, workspaceId: payload.workspaceId, sequence, data: commands })
         }
       })
     } else if (event === 'run') {
@@ -85,6 +88,11 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
     }
   })
 
+  await page.exposeFunction('__acknowledged', ({ workspaceId, terminalId, sequence }) => {
+    const child = ptys[(workspaceId || '') + '|' + terminalId]
+    if (child && !child.killed) child.stdin.write(JSON.stringify({ ack: sequence }) + '\n')
+  })
+
   await page.addInitScript(({ recents, pick, startup }) => {
     const listeners = {}
     window.__TAURI_INTERNALS__ = {
@@ -102,6 +110,7 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
         if (cmd === 'get_recent_projects') return recents
         if (cmd === 'startup_directory') return startup
         if (cmd === 'dom_dump') return false
+        if (cmd === 'acknowledge_output') { window.__acknowledged(args); return null }
         // the native folder picker: the folder that gets chosen in it
         if (cmd === 'plugin:dialog|open') return pick
         if (cmd === 'plugin:event|listen') { listeners[args.event] = args.handler; return args.handler }

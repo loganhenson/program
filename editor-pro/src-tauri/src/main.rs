@@ -24,7 +24,7 @@ use tauri::{
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_store::StoreExt;
-use terminal::{parse::TerminalCommand, terminal::Size};
+use terminal::terminal::{Batch, Flow, Size};
 
 /// The id of the Quit item in the app menu.
 const QUIT_MENU_ID: &str = "quit";
@@ -100,6 +100,60 @@ struct TerminalSlot {
   resize_tx: Sender<Size>,
   is_active: Arc<AtomicBool>,
   _kill_tx: Sender<()>,
+  _flow: FlowRegistration,
+}
+
+impl Drop for TerminalSlot {
+  fn drop(&mut self) {
+    // however the terminal went away (its tab, or its whole project)
+    self.is_active.store(false, Ordering::Relaxed);
+  }
+}
+
+/// The output flow of every open terminal. Kept apart from the workspaces
+/// so that acknowledging output never waits on anything else the app is
+/// doing with them.
+type Flows = Arc<Mutex<HashMap<String, Flow>>>;
+
+fn flow_key(workspace_id: &str, terminal_id: &str) -> String {
+  format!("{}\u{0}{}", workspace_id, terminal_id)
+}
+
+/// A terminal's entry in `Flows`, removed again when the terminal goes away.
+struct FlowRegistration {
+  flows: Flows,
+  key: String,
+}
+
+impl FlowRegistration {
+  fn new(flows: &Flows, key: String, flow: Flow) -> Self {
+    flows
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .insert(key.clone(), flow);
+    FlowRegistration { flows: flows.clone(), key }
+  }
+}
+
+impl Drop for FlowRegistration {
+  fn drop(&mut self) {
+    self
+      .flows
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .remove(&self.key);
+  }
+}
+
+/// The page has taken a batch of a terminal's output. Until it says so, no
+/// more than a couple of batches are sent: a program that prints faster than
+/// the page can draw is slowed down instead of filling memory.
+#[tauri::command]
+fn acknowledge_output(workspace_id: String, terminal_id: String, sequence: u64, flows: tauri::State<Flows>) {
+  let flows = flows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  if let Some(flow) = flows.get(&flow_key(&workspace_id, &terminal_id)) {
+    flow.acknowledge(sequence);
+  }
 }
 
 /// Everything Rust holds on behalf of one open project tab. Each
@@ -501,7 +555,15 @@ fn main() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .manage(tools.clone())
-    .invoke_handler(tauri::generate_handler![preflight, get_recent_projects, bell, startup_directory, dom_dump])
+    .manage(Flows::default())
+    .invoke_handler(tauri::generate_handler![
+      preflight,
+      get_recent_projects,
+      bell,
+      startup_directory,
+      dom_dump,
+      acknowledge_output
+    ])
     .menu(|handle| {
       Menu::with_items(
         handle,
@@ -1045,24 +1107,36 @@ fn spawn_terminal_for_workspace(
   let term_for_output = terminal_id.clone();
   let term_for_resize = terminal_id;
 
-  let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Vec<TerminalCommand>>();
+  let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Batch>();
   let (terminal_resize_tx, terminal_resize_rx) = mpsc::channel::<Size>();
 
   let terminal_api = terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx);
   let is_active = Arc::new(AtomicBool::new(true));
+  let flow_registration = FlowRegistration::new(
+    window.app_handle().state::<Flows>().inner(),
+    flow_key(&ws_for_output, &term_for_output),
+    terminal_api.flow.clone(),
+  );
 
   let is_active_for_output = is_active.clone();
+  let flow_for_output = terminal_api.flow.clone();
   thread::spawn(move || {
-    for message in terminal_output_rx {
-      if is_active_for_output.load(Ordering::Relaxed) {
-        let _ = window_terminal_output.emit(
-          "output",
-          serde_json::json!({
-            "workspaceId": ws_for_output,
-            "terminalId": term_for_output,
-            "data": message,
-          }),
-        );
+    for batch in terminal_output_rx {
+      let sent = is_active_for_output.load(Ordering::Relaxed)
+        && window_terminal_output
+          .emit(
+            "output",
+            serde_json::json!({
+              "workspaceId": ws_for_output,
+              "terminalId": term_for_output,
+              "sequence": batch.sequence,
+              "data": batch.commands,
+            }),
+          )
+          .is_ok();
+      // Nobody will acknowledge what was not sent.
+      if !sent {
+        flow_for_output.acknowledge(batch.sequence);
       }
     }
   });
@@ -1088,6 +1162,7 @@ fn spawn_terminal_for_workspace(
     resize_tx: terminal_api.resize_tx,
     is_active,
     _kill_tx: terminal_api.kill_tx,
+    _flow: flow_registration,
   }
 }
 

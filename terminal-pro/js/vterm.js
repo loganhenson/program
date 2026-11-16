@@ -68,6 +68,9 @@ module.exports = {
       console.log(`failed to initialize:` + e)
     }
   },
+  acknowledgeTerminalOutput(payload) {
+    invoke('acknowledge_output', { terminalId: payload.terminalId, sequence: payload.sequence }).catch(() => {})
+  },
   sendOutputToTerminal(payload) {
     // payload = { terminalId, data }
     window.vterm.ports.receiveTerminalOutput.send(payload)
