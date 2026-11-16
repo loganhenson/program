@@ -1,5 +1,6 @@
 module Editor.Clipboard exposing (copy, cut, paste)
 
+import Array
 import Editor.Lib exposing (createRenderableLine, orderSelectionCoordinates)
 import Editor.Msg exposing (Model, RenderableLine, Travelable)
 import List.Extra
@@ -112,6 +113,12 @@ cut model =
                 endLine =
                     max start.y end.y
 
+                -- Looked up by number once for every line of the selection:
+                -- walking the list to each one made cutting a big selection
+                -- take time with the square of its length.
+                linesByNumber =
+                    Array.fromList model.travelable.renderableLines
+
                 beforeHighlight =
                     List.take startLine model.travelable.renderableLines
 
@@ -124,7 +131,7 @@ cut model =
                             -- start
                             if lineNumber == start.y then
                                 if start.y < end.y then
-                                    case List.Extra.getAt lineNumber model.travelable.renderableLines of
+                                    case Array.get lineNumber linesByNumber of
                                         Just renderableLine ->
                                             let
                                                 text =
@@ -139,7 +146,7 @@ cut model =
                                             ( acc, lines )
 
                                 else if start.y == end.y then
-                                    case List.Extra.getAt lineNumber model.travelable.renderableLines of
+                                    case Array.get lineNumber linesByNumber of
                                         Just renderableLine ->
                                             let
                                                 text =
@@ -154,7 +161,7 @@ cut model =
                                             ( acc, lines )
 
                                 else
-                                    case List.Extra.getAt lineNumber model.travelable.renderableLines of
+                                    case Array.get lineNumber linesByNumber of
                                         Just renderableLine ->
                                             let
                                                 text =
@@ -171,7 +178,7 @@ cut model =
                             else if lineNumber == end.y then
                                 -- end
                                 if start.y < end.y then
-                                    case List.Extra.getAt lineNumber model.travelable.renderableLines of
+                                    case Array.get lineNumber linesByNumber of
                                         Just renderableLine ->
                                             let
                                                 text =
@@ -186,7 +193,7 @@ cut model =
                                             ( acc, lines )
 
                                 else if start.y == end.y then
-                                    case List.Extra.getAt lineNumber model.travelable.renderableLines of
+                                    case Array.get lineNumber linesByNumber of
                                         Just renderableLine ->
                                             let
                                                 text =
@@ -201,7 +208,7 @@ cut model =
                                             ( acc, lines )
 
                                 else
-                                    case List.Extra.getAt lineNumber model.travelable.renderableLines of
+                                    case Array.get lineNumber linesByNumber of
                                         Just renderableLine ->
                                             let
                                                 text =
@@ -217,7 +224,7 @@ cut model =
 
                             else
                                 -- in between lines
-                                case List.Extra.getAt lineNumber model.travelable.renderableLines of
+                                case Array.get lineNumber linesByNumber of
                                     Just renderableLine ->
                                         let
                                             text =
@@ -274,13 +281,17 @@ copy editor =
 
                 endLine =
                     max start.y end.y
+
+                -- see `cut`
+                linesByNumber =
+                    Array.fromList editor.travelable.renderableLines
             in
             List.foldl
                 (\lineNumber acc ->
                     -- start
                     if lineNumber == start.y then
                         if start.y < end.y then
-                            case List.Extra.getAt lineNumber editor.travelable.renderableLines of
+                            case Array.get lineNumber linesByNumber of
                                 Just renderableLine ->
                                     acc ++ String.slice start.x (String.length renderableLine.text) renderableLine.text ++ "\n"
 
@@ -288,7 +299,7 @@ copy editor =
                                     acc
 
                         else if start.y == end.y then
-                            case List.Extra.getAt lineNumber editor.travelable.renderableLines of
+                            case Array.get lineNumber linesByNumber of
                                 Just renderableLine ->
                                     acc ++ String.slice (min start.x end.x) (max start.x end.x + 1) renderableLine.text
 
@@ -296,7 +307,7 @@ copy editor =
                                     acc
 
                         else
-                            case List.Extra.getAt lineNumber editor.travelable.renderableLines of
+                            case Array.get lineNumber linesByNumber of
                                 Just renderableLine ->
                                     acc ++ String.slice 0 (start.x + 1) renderableLine.text
 
@@ -306,7 +317,7 @@ copy editor =
                     else if lineNumber == end.y then
                         -- end
                         if start.y < end.y then
-                            case List.Extra.getAt lineNumber editor.travelable.renderableLines of
+                            case Array.get lineNumber linesByNumber of
                                 Just renderableLine ->
                                     acc ++ String.slice 0 (end.x + 1) renderableLine.text
 
@@ -314,7 +325,7 @@ copy editor =
                                     acc
 
                         else if start.y == end.y then
-                            case List.Extra.getAt lineNumber editor.travelable.renderableLines of
+                            case Array.get lineNumber linesByNumber of
                                 Just renderableLine ->
                                     acc ++ String.slice (min start.x end.x) (max start.x end.x) renderableLine.text
 
@@ -322,7 +333,7 @@ copy editor =
                                     acc
 
                         else
-                            case List.Extra.getAt lineNumber editor.travelable.renderableLines of
+                            case Array.get lineNumber linesByNumber of
                                 Just renderableLine ->
                                     acc ++ String.slice end.x (String.length renderableLine.text) renderableLine.text ++ "\n"
 
@@ -331,7 +342,7 @@ copy editor =
 
                     else
                         -- in between lines
-                        acc ++ (Maybe.withDefault "" <| Maybe.map .text <| List.Extra.getAt lineNumber editor.travelable.renderableLines) ++ "\n"
+                        acc ++ (Maybe.withDefault "" <| Maybe.map .text <| Array.get lineNumber linesByNumber) ++ "\n"
                 )
                 ""
                 (List.range startLine endLine)

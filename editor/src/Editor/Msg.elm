@@ -13,6 +13,9 @@ type alias ScrollLeft =
 
 type alias ScrollTop =
     { scrollTop : Int
+
+    -- how tall the part of the editor that can be seen is
+    , clientHeight : Int
     }
 
 
@@ -131,6 +134,10 @@ type alias Model =
     , selectedCompletionIndex : Int
     , symbols : List Symbol
     , ports : Ports
+
+    -- How tall the part of the editor that can be seen is, in pixels, as of
+    -- the last time it was scrolled. 0 until then.
+    , viewportHeight : Int
     }
 
 
