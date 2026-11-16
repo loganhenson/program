@@ -27,3 +27,8 @@
 html, body, * {
   overscroll-behavior: none;
 }
+
+/* File tree: a row under the pointer, unless it is the selected one */
+.file-tree-row:not(.bg-blue-700):hover {
+  background-color: rgba(255, 255, 255, 0.07);
+}

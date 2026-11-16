@@ -197,8 +197,13 @@ exports.start = async ({ app, cwd, width = 800, height = 500, scale = 1.5, recen
       execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listFile,
         '-vf', 'split[a][b];[a]palettegen=max_colors=160:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle',
         '-fps_mode', 'vfr', '-loop', '0', out])
+      // the same frames as a video, next to the frames (for sharing; the readme uses the GIF)
+      const video = path.join(OUT, path.basename(out).replace(/\.gif$/, '.mp4'))
+      execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listFile,
+        '-vf', 'fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2', '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', video])
       const seconds = (frames[frames.length - 1].at + tail) / 1000
       console.log(`${out}: ${frames.length} frames, ${seconds.toFixed(1)}s, ${(fs.statSync(out).size / 1e6).toFixed(2)} MB`)
+      console.log(`${video}: ${(fs.statSync(video).size / 1e6).toFixed(2)} MB`)
     },
   }
   await sleep(2500)

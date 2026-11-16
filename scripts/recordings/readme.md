@@ -9,6 +9,9 @@ node scripts/recordings/terminal.js
 node scripts/recordings/editor.js
 ```
 
+Each also writes the same recording as a video to
+`scripts/recordings/out/*.mp4` (not committed).
+
 They need `ffmpeg`, oh-my-zsh, and `php`, `claude` and `codex` on the `PATH`.
 `DEMO_PROJECT` names the Laravel project they use, as a path below the home
 directory (default `Desktop/getcaloric`).

@@ -14,7 +14,7 @@ const { start } = require('./rec')
   const name = path.basename(program), other = path.basename(laravel)
   const rec = await start({ app: 'editor-pro', cwd: program, width: 1080, height: 960, scale: 1.25, framesDir: __dirname + '/out/editor-frames', recents: [program, laravel], pick: laravel })
   const enter = async (text, delay) => { await rec.type(text, delay); await rec.pause(250); await rec.press('Enter') }
-  const openFolder = p => rec.page.locator(`[id="${p}"]`).locator('xpath=preceding-sibling::*[1]').click()
+  const openFolder = p => rec.page.locator(`[id="${p}"] .file-tree-chevron`).click()
   const openFile = name => rec.page.getByText(name, { exact: true }).first().dblclick()
   const seen = []
 
