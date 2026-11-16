@@ -2,8 +2,10 @@
 //
 // terminal-pro's built frontend (its JavaScript, the Elm terminal, the CSS) is
 // loaded in headless WebKit, the engine Tauri uses on macOS. Only the Tauri
-// IPC is replaced: events go to `terminal-headless pty`, so a real shell runs
-// in a real PTY, and plugin calls (clipboard, opener, window) are recorded.
+// IPC is replaced: events go to `terminal-headless pty --acks`, so a real
+// shell runs in a real PTY and its output is held back until the page has
+// acknowledged what it was sent, exactly as in the app. Plugin calls
+// (clipboard, opener, window) are recorded.
 // What is tested here is what only exists in the browser: where a click
 // lands, what gets copied, how the rows are laid out.
 //
@@ -30,7 +32,7 @@ async function open(viewport = { width: 900, height: 560 }) {
   await page.exposeFunction('__emitted', (event, payload) => {
     emitted.push([event, payload])
     if (event === 'openTerminal') {
-      const child = spawn(HEADLESS, ['pty', os.tmpdir()], { stdio: ['pipe', 'pipe', 'inherit'] })
+      const child = spawn(HEADLESS, ['pty', os.tmpdir(), '--acks'], { stdio: ['pipe', 'pipe', 'inherit'] })
       ptys[payload.terminalId] = child
       let pending = ''
       child.stdout.on('data', data => {
@@ -39,7 +41,9 @@ async function open(viewport = { width: 900, height: 560 }) {
         while ((newline = pending.indexOf('\n')) >= 0) {
           const line = pending.slice(0, newline)
           pending = pending.slice(newline + 1)
-          if (line) page.evaluate(([id, data]) => window.__dispatch('output', { terminalId: id, data }), [payload.terminalId, JSON.parse(line)]).catch(() => {})
+          if (!line) continue
+          const { sequence, commands } = JSON.parse(line)
+          page.evaluate(([id, sequence, data]) => window.__dispatch('output', { terminalId: id, sequence, data }), [payload.terminalId, sequence, commands]).catch(() => {})
         }
       })
     } else if (event === 'run' && ptys[payload.terminalId]) {
@@ -50,6 +54,11 @@ async function open(viewport = { width: 900, height: 560 }) {
     } else if (event === 'closeTerminal' && ptys[payload.terminalId]) {
       ptys[payload.terminalId].kill()
     }
+  })
+
+  // the page has taken a batch: only now may the backend send more
+  await page.exposeFunction('__acknowledged', ({ terminalId, sequence }) => {
+    if (ptys[terminalId] && !ptys[terminalId].killed) ptys[terminalId].stdin.write(JSON.stringify({ ack: sequence }) + '\n')
   })
 
   await page.addInitScript(() => {
@@ -66,6 +75,7 @@ async function open(viewport = { width: 900, height: 560 }) {
       async invoke(command, args) {
         if (command === 'plugin:event|listen') { listeners[args.event] = args.handler; return args.handler }
         if (command === 'plugin:event|emit') { window.__emitted(args.event, args.payload); return null }
+        if (command === 'acknowledge_output') { window.__acknowledgements = (window.__acknowledgements || 0) + 1; window.__acknowledged(args); return null }
         window.__invoked.push([command, args])
         if (command === 'preflight') return { all_ok: true, results: [] }
         if (command === 'plugin:clipboard-manager|read_text') return window.__clipboard || ''
@@ -287,6 +297,22 @@ const tests = {
       const columns = t.emitted.filter(([event]) => event === 'resize').pop()[1].size.width
       equal(found[0].rows, Math.ceil(text.length / columns), `rows the long line takes at ${columns} columns`)
     }
+  },
+
+  'a program that floods the screen can be stopped, and the terminal answers at once': async t => {
+    // `yes` prints far faster than anything can draw. Nothing used to slow it
+    // down: its output piled up on the way to the page (gigabytes within a
+    // minute), and Ctrl+C sat behind that pile for minutes.
+    await t.command('yes')
+    await sleep(2500)
+    const acknowledged = await t.page.evaluate(() => window.__acknowledgements || 0)
+    ok(acknowledged > 5, `the page acknowledged ${acknowledged} batches of output while it was flooded`)
+
+    const pressed = Date.now()
+    await t.page.keyboard.press('Control+c')
+    await t.command('echo stop""ped', /^stopped/)
+    const took = Date.now() - pressed
+    ok(took < 5000, `it took ${took}ms for the shell to answer after Ctrl+C`)
   },
 
   'a new tab gets the size of the window, and closing the last shell quits': async t => {

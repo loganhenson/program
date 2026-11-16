@@ -165,6 +165,13 @@ export default {
   sendVideError(error) {
     window.vide.ports.receiveVideError.send(error)
   },
+  acknowledgeTerminalOutput(payload) {
+    invoke('acknowledge_output', {
+      workspaceId: payload.workspaceId,
+      terminalId: payload.terminalId,
+      sequence: payload.sequence,
+    }).catch(() => {})
+  },
   sendOutputToTerminal(output) {
     // Rust sends { workspaceId, data } — forward the whole envelope so
     // the Elm side can route the output to the right workspace.

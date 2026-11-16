@@ -10,7 +10,7 @@ use std::{
   thread,
 };
 use tauri::{Emitter, Listener, Manager, WebviewWindow};
-use terminal::{parse::TerminalCommand, terminal::Size};
+use terminal::terminal::{Batch, Flow, Size};
 
 fn nerd_font_probe() -> ProbeOutcome {
   preflight::probe_font("NerdFontMono")
@@ -48,6 +48,22 @@ struct TerminalSlot {
 
 type Terminals = Arc<Mutex<HashMap<String, TerminalSlot>>>;
 
+/// The output flow of every open terminal, by terminal id. Kept apart from
+/// the terminals themselves so that acknowledging output never waits on
+/// anything else the app is doing.
+type Flows = Arc<Mutex<HashMap<String, Flow>>>;
+
+/// The page has taken a batch of a terminal's output. Until it says so, no
+/// more than a couple of batches are sent: a program that prints faster than
+/// the page can draw is slowed down instead of filling memory.
+#[tauri::command]
+fn acknowledge_output(terminal_id: String, sequence: u64, flows: tauri::State<Flows>) {
+  let flows = flows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  if let Some(flow) = flows.get(&terminal_id) {
+    flow.acknowledge(sequence);
+  }
+}
+
 fn main() {
   tauri::Builder::default()
     .runtime(tauri_runtime_wry::Wry::default())
@@ -55,7 +71,8 @@ fn main() {
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_notification::init())
-    .invoke_handler(tauri::generate_handler![preflight, bell])
+    .manage(Flows::default())
+    .invoke_handler(tauri::generate_handler![preflight, bell, acknowledge_output])
     .setup(|app| {
       let window = app.get_webview_window("main").unwrap();
       let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
@@ -63,14 +80,17 @@ fn main() {
       // Listeners must be live before Elm's first `requestOpenTerminal`
       // fires at init time. Registering here (not on frontend-ready)
       // guarantees the event isn't lost if JS races ahead.
-      bootstrap(window, terminals, home);
+      let flows = app.state::<Flows>().inner().clone();
+      bootstrap(window, terminals, flows, home);
       Ok(())
     })
     .run(tauri::generate_context!())
     .expect("failed to run app");
 }
 
-fn bootstrap(window: WebviewWindow, terminals: Terminals, home: String) {
+fn bootstrap(window: WebviewWindow, terminals: Terminals, flows: Flows, home: String) {
+  let flows_for_open = flows.clone();
+  let flows_for_close = flows;
   let terminals_for_open = terminals.clone();
   let terminals_for_close = terminals.clone();
   let terminals_for_run = terminals.clone();
@@ -94,7 +114,11 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, home: String) {
       .filter(|s| !s.is_empty())
       .unwrap_or_else(|| home.clone());
 
-    let slot = spawn_terminal(&window_for_open, terminal_id.clone(), cwd);
+    let (slot, flow) = spawn_terminal(&window_for_open, terminal_id.clone(), cwd);
+    flows_for_open
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .insert(terminal_id.clone(), flow);
     terminals_for_open.lock().unwrap().insert(terminal_id, slot);
   });
 
@@ -109,6 +133,10 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, home: String) {
       Some(s) => s.to_string(),
       None => return,
     };
+    flows_for_close
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .remove(&terminal_id);
     if let Some(slot) = terminals_for_close.lock().unwrap().remove(&terminal_id) {
       slot.is_active.store(false, Ordering::Relaxed);
       // drop(slot) here closes kill_tx + channels
@@ -154,29 +182,36 @@ fn bootstrap(window: WebviewWindow, terminals: Terminals, home: String) {
 
 /// Spawn a PTY for the given terminal id. Output/resize events carry the
 /// id so Elm can route them to the matching tab.
-fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String) -> TerminalSlot {
+fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String) -> (TerminalSlot, Flow) {
   let window_terminal_output = window.clone();
   let window_terminal_resize = window.clone();
   let term_for_output = terminal_id.clone();
   let term_for_resize = terminal_id;
 
-  let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Vec<TerminalCommand>>();
+  let (terminal_output_tx, terminal_output_rx) = mpsc::channel::<Batch>();
   let (terminal_resize_tx, terminal_resize_rx) = mpsc::channel::<Size>();
 
   let terminal_api = terminal::terminal::start(directory, terminal_output_tx, terminal_resize_tx);
   let is_active = Arc::new(AtomicBool::new(true));
 
   let is_active_for_output = is_active.clone();
+  let flow_for_output = terminal_api.flow.clone();
   thread::spawn(move || {
-    for message in terminal_output_rx {
-      if is_active_for_output.load(Ordering::Relaxed) {
-        let _ = window_terminal_output.emit(
-          "output",
-          serde_json::json!({
-            "terminalId": term_for_output,
-            "data": message,
-          }),
-        );
+    for batch in terminal_output_rx {
+      let sent = is_active_for_output.load(Ordering::Relaxed)
+        && window_terminal_output
+          .emit(
+            "output",
+            serde_json::json!({
+              "terminalId": term_for_output,
+              "sequence": batch.sequence,
+              "data": batch.commands,
+            }),
+          )
+          .is_ok();
+      // Nobody will acknowledge what was not sent.
+      if !sent {
+        flow_for_output.acknowledge(batch.sequence);
       }
     }
   });
@@ -196,10 +231,14 @@ fn spawn_terminal(window: &WebviewWindow, terminal_id: String, directory: String
     }
   });
 
-  TerminalSlot {
-    run_tx: terminal_api.run_tx,
-    resize_tx: terminal_api.resize_tx,
-    is_active,
-    _kill_tx: terminal_api.kill_tx,
-  }
+  let flow = terminal_api.flow.clone();
+  (
+    TerminalSlot {
+      run_tx: terminal_api.run_tx,
+      resize_tx: terminal_api.resize_tx,
+      is_active,
+      _kill_tx: terminal_api.kill_tx,
+    },
+    flow,
+  )
 }
