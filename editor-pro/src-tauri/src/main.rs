@@ -19,11 +19,70 @@ use std::{
   thread,
 };
 use tauri::{
-  menu::{Menu, PredefinedMenuItem, Submenu},
+  menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
   AppHandle, Emitter, Listener, Manager, WebviewWindow,
 };
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_store::StoreExt;
 use terminal::{parse::TerminalCommand, terminal::Size};
+
+/// The id of the Quit item in the app menu.
+const QUIT_MENU_ID: &str = "quit";
+
+/// Quitting loses edits that were not saved and stops whatever is running
+/// in the terminals, so it is confirmed while a project is open. With
+/// nothing open there is nothing to lose.
+fn quit_needs_confirmation(open_projects: usize) -> bool {
+  open_projects > 0
+}
+
+/// How many projects are open, for deciding whether quitting is confirmed.
+/// Quitting must never wait on the rest of the app: if the list is in use
+/// (or was left broken by a thread that panicked) it counts as "some".
+fn open_projects(workspaces: &Workspaces) -> usize {
+  match workspaces.try_lock() {
+    Ok(open) => open.len(),
+    Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner().len(),
+    Err(std::sync::TryLockError::WouldBlock) => 1,
+  }
+}
+
+/// Command+Q. Handled here and not in the page, so that it works whatever
+/// the page is showing or doing.
+fn request_quit(app: &AppHandle) {
+  static ASKING: AtomicBool = AtomicBool::new(false);
+
+  let open = app
+    .try_state::<Workspaces>()
+    .map(|workspaces| open_projects(&workspaces))
+    .unwrap_or(0);
+  if !quit_needs_confirmation(open) {
+    app.exit(0);
+    return;
+  }
+
+  // Already asking: the dialog that is up gets the answer.
+  if ASKING.swap(true, Ordering::SeqCst) {
+    return;
+  }
+
+  let app_for_answer = app.clone();
+  let mut dialog = app
+    .dialog()
+    .message("Changes that have not been saved will be lost, and anything running in a terminal will be stopped.")
+    .title("Quit EditorPro?")
+    .kind(MessageDialogKind::Warning)
+    .buttons(MessageDialogButtons::OkCancelCustom("Quit".to_string(), "Cancel".to_string()));
+  if let Some(window) = app.get_webview_window("main") {
+    dialog = dialog.parent(&window);
+  }
+  dialog.show(move |quit| {
+    ASKING.store(false, Ordering::SeqCst);
+    if quit {
+      app_for_answer.exit(0);
+    }
+  });
+}
 
 /// Debounce window for project-wide rebuild requests. fs events come in
 /// bursts (atomic renames, IDE saves, `npm install`) — we coalesce them
@@ -446,18 +505,33 @@ fn main() {
     .menu(|handle| {
       Menu::with_items(
         handle,
-        &[&Submenu::with_items(
-          handle,
-          "Controls",
-          true,
-          &[
-            // Required so OSX keyboard shortcuts (cmd+c/v/a) reach the focused webview
-            &PredefinedMenuItem::select_all(handle, None)?,
-            &PredefinedMenuItem::paste(handle, None)?,
-            &PredefinedMenuItem::copy(handle, None)?,
-          ],
-        )?],
+        &[
+          // The first menu is the app's own menu on macOS. Quit is an item
+          // of ours rather than the predefined one, so that it can ask.
+          &Submenu::with_items(
+            handle,
+            "EditorPro",
+            true,
+            &[&MenuItem::with_id(handle, QUIT_MENU_ID, "Quit EditorPro", true, Some("CmdOrCtrl+Q"))?],
+          )?,
+          &Submenu::with_items(
+            handle,
+            "Edit",
+            true,
+            &[
+              // Required so OSX keyboard shortcuts (cmd+c/v/a) reach the focused webview
+              &PredefinedMenuItem::select_all(handle, None)?,
+              &PredefinedMenuItem::paste(handle, None)?,
+              &PredefinedMenuItem::copy(handle, None)?,
+            ],
+          )?,
+        ],
       )
+    })
+    .on_menu_event(|app, event| {
+      if event.id().as_ref() == QUIT_MENU_ID {
+        request_quit(app);
+      }
     })
     .setup(move |app| {
       let app_handle = app.handle().clone();
@@ -465,6 +539,8 @@ fn main() {
       app.manage(recents.clone());
 
       let workspaces: Workspaces = Arc::new(Mutex::new(HashMap::new()));
+      // also reachable from the menu, which asks before quitting while a project is open
+      app.manage(workspaces.clone());
 
       let window = app.get_webview_window("main").unwrap();
       let window_for_callback = window.clone();
@@ -1132,6 +1208,34 @@ fn find_project(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn quitting_is_confirmed_only_while_a_project_is_open() {
+    assert!(!quit_needs_confirmation(0));
+    assert!(quit_needs_confirmation(1));
+    assert!(quit_needs_confirmation(3));
+  }
+
+  #[test]
+  fn counting_open_projects_never_waits_for_the_list() {
+    let workspaces: Workspaces = Arc::new(Mutex::new(HashMap::new()));
+    assert_eq!(open_projects(&workspaces), 0);
+
+    // in use by something else: quitting does not wait, it asks
+    let held = workspaces.lock().unwrap();
+    assert!(quit_needs_confirmation(open_projects(&workspaces)));
+    drop(held);
+
+    // left poisoned by a thread that panicked while holding it: still answers
+    let for_panic = workspaces.clone();
+    let _ = thread::spawn(move || {
+      let _guard = for_panic.lock().unwrap();
+      panic!("poison the list");
+    })
+    .join();
+    assert!(workspaces.is_poisoned());
+    assert_eq!(open_projects(&workspaces), 0);
+  }
 
   #[test]
   fn find_in_project_returns_empty_when_fd_unresolved() {
