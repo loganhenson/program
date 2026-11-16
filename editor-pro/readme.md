@@ -2,6 +2,8 @@
 
 Code editor app (Tauri, macOS).
 
+![EditorPro with a project open, tests and Claude Code in its terminal, and a second project tab](../docs/editor-pro.gif)
+
 ## Runtime dependencies
 
 Probed on launch. If anything is missing, the app shows install commands on startup:

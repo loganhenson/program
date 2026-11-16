@@ -2,6 +2,8 @@
 
 Terminal emulator app (Tauri, macOS).
 
+![TerminalPro running php artisan, Claude Code and Codex in three tabs](../docs/terminal-pro.gif)
+
 ## Runtime dependencies
 
 Probed on launch. If anything is missing, the app shows install commands on startup:

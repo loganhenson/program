@@ -5,3 +5,5 @@ target/
 elm-stuff
 built/elm.js
 built/main.css
+scripts/recordings/out
+scripts/recordings/zdot/.zcompdump*
