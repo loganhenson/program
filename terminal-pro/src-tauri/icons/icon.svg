@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- TerminalPro: three glowing phosphor lines of output and a block cursor.
+       macOS icon grid: 824px tile in a 1024px canvas. -->
+  <defs>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f4a2d"/>
+      <stop offset="1" stop-color="#052417"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.3"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-60%" width="160%" height="220%">
+      <feGaussianBlur stdDeviation="20" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#screen)" filter="url(#shadow)"/>
+  <g clip-path="url(#tile)">
+    <g filter="url(#glow)" fill="#6dffa6">
+      <rect x="250" y="324" width="270" height="76" rx="12"/>
+      <rect x="250" y="474" width="450" height="76" rx="12"/>
+      <rect x="250" y="624" width="170" height="76" rx="12"/>
+      <rect x="462" y="610" width="76" height="104" rx="10"/>
+    </g>
+  </g>
+  <rect x="103" y="103" width="818" height="818" rx="183" fill="none" stroke="url(#edge)" stroke-width="6"/>
+</svg>

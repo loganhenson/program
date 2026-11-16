@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- EditorPro: a program listing on green-bar paper: four lines of code, the
+       current one highlighted. macOS icon grid: 824px tile in a 1024px canvas. -->
+  <defs>
+    <linearGradient id="shade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#8a7a50" stop-opacity="0.16"/>
+    </linearGradient>
+    <linearGradient id="current" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3f79ea"/>
+      <stop offset="1" stop-color="#2248b0"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.18"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+    <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#fbf8ee" filter="url(#shadow)"/>
+  <g clip-path="url(#tile)">
+    <!-- the green bars -->
+    <g fill="#c9e7ce">
+      <rect x="100" y="100" width="824" height="137.5"/>
+      <rect x="100" y="375" width="824" height="137.5"/>
+      <rect x="100" y="649.5" width="824" height="137.5"/>
+    </g>
+    <rect x="100" y="100" width="824" height="824" fill="url(#shade)"/>
+    <!-- the listing -->
+    <rect x="274" y="277" width="250" height="58" rx="29" fill="#33413a"/>
+    <rect x="336" y="414.5" width="390" height="58" rx="29" fill="url(#current)"/>
+    <rect x="336" y="552" width="230" height="58" rx="29" fill="#33413a"/>
+    <rect x="274" y="689.5" width="170" height="58" rx="29" fill="#33413a"/>
+  </g>
+  <rect x="103" y="103" width="818" height="818" rx="183" fill="none" stroke="url(#edge)" stroke-width="6"/>
+</svg>
