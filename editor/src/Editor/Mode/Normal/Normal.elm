@@ -77,7 +77,8 @@ update key model =
     else if key.code == "KeyW" then
         W.handle model
 
-    else if key.code == "Digit0" then
+    else if key.code == "Digit0" && model.normalBuffer.number == 0 then
+        -- (after another digit, 0 is part of a count: 10j, 40k)
         Zero.handle model
 
     else if key.code == "KeyI" then
