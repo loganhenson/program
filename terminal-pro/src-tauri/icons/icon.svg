@@ -1,20 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- TerminalPro: the tile is a phosphor CRT screen: three lines of output, a
-       block cursor and scanlines. macOS icon grid: 824px tile in a 1024px canvas. -->
+  <!-- TerminalPro: three glowing phosphor lines of output and a block cursor.
+       macOS icon grid: 824px tile in a 1024px canvas. -->
   <defs>
-    <radialGradient id="screen" cx="0.5" cy="0.45" r="0.75">
-      <stop offset="0" stop-color="#16663d"/>
-      <stop offset="0.6" stop-color="#0a3a22"/>
-      <stop offset="1" stop-color="#03170d"/>
-    </radialGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f4a2d"/>
+      <stop offset="1" stop-color="#052417"/>
+    </linearGradient>
     <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
       <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.05"/>
       <stop offset="1" stop-color="#000000" stop-opacity="0.3"/>
     </linearGradient>
-    <pattern id="scanlines" width="16" height="16" patternUnits="userSpaceOnUse">
-      <rect width="16" height="6" fill="#000000" fill-opacity="0.2"/>
-    </pattern>
     <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
       <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.32"/>
     </filter>
@@ -32,8 +28,6 @@
       <rect x="250" y="624" width="170" height="76" rx="12"/>
       <rect x="462" y="610" width="76" height="104" rx="10"/>
     </g>
-    <rect x="100" y="100" width="824" height="824" fill="url(#scanlines)"/>
-    <path d="M 100 100 H 760 Q 330 190 100 560 Z" fill="#ffffff" fill-opacity="0.06"/>
   </g>
   <rect x="103" y="103" width="818" height="818" rx="183" fill="none" stroke="url(#edge)" stroke-width="6"/>
 </svg>

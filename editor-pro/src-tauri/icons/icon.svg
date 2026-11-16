@@ -1,16 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- EditorPro: the tile is a program listing on green-bar tractor-feed paper:
-       four lines of code, the current one highlighted. macOS icon grid: 824px
-       tile in a 1024px canvas. -->
+  <!-- EditorPro: a program listing on green-bar paper: four lines of code, the
+       current one highlighted. macOS icon grid: 824px tile in a 1024px canvas. -->
   <defs>
     <linearGradient id="shade" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"/>
       <stop offset="1" stop-color="#8a7a50" stop-opacity="0.16"/>
-    </linearGradient>
-    <linearGradient id="hole" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#16327f"/>
-      <stop offset="0.35" stop-color="#2a55c4"/>
-      <stop offset="1" stop-color="#3f79ea"/>
     </linearGradient>
     <linearGradient id="current" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#3f79ea"/>
@@ -35,18 +29,6 @@
       <rect x="100" y="649.5" width="824" height="137.5"/>
     </g>
     <rect x="100" y="100" width="824" height="824" fill="url(#shade)"/>
-    <!-- tractor-feed strips: perforation and sprocket holes -->
-    <g stroke="#aab8ad" stroke-width="5" stroke-dasharray="12 12">
-      <path d="M 214 100 V 924"/>
-      <path d="M 810 100 V 924"/>
-    </g>
-    <g fill="url(#hole)">
-      <circle cx="158" cy="237.5" r="19"/><circle cx="866" cy="237.5" r="19"/>
-      <circle cx="158" cy="375" r="19"/><circle cx="866" cy="375" r="19"/>
-      <circle cx="158" cy="512" r="19"/><circle cx="866" cy="512" r="19"/>
-      <circle cx="158" cy="649.5" r="19"/><circle cx="866" cy="649.5" r="19"/>
-      <circle cx="158" cy="787" r="19"/><circle cx="866" cy="787" r="19"/>
-    </g>
     <!-- the listing -->
     <rect x="274" y="277" width="250" height="58" rx="29" fill="#33413a"/>
     <rect x="336" y="414.5" width="390" height="58" rx="29" fill="url(#current)"/>
