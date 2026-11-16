@@ -1,4 +1,4 @@
-module Editor exposing (initialConfig, initialPorts, subscriptions, update, view)
+module Editor exposing (initialConfig, initialPorts, subscriptions, update, view, window, windowLength, windowStart)
 
 import Browser.Events exposing (onMouseUp)
 import Editor.Clipboard
@@ -70,7 +70,7 @@ update msg model =
                     ( { model | travelable = { travelable | scrollLeft = rendered.scrollLeft } }, Cmd.none )
 
                 Editor.Msg.ContainerScroll container ->
-                    ( { model | travelable = { travelable | scrollTop = container.scrollTop } }, Cmd.none )
+                    ( { model | travelable = { travelable | scrollTop = container.scrollTop }, viewportHeight = container.clientHeight }, Cmd.none )
 
                 Editor.Msg.ErrorsResponse errors ->
                     Editor.Errors.update errors model
@@ -165,32 +165,139 @@ update msg model =
                         |> Editor.Lib.updateEditor model
 
 
-viewLineNumbers : Config -> List Editor.Msg.RenderableLine -> Html.Html msg
-viewLineNumbers config renderableLines =
+{-| Only the lines around what can be seen are drawn; the rest of the file
+is two empty blocks of the right height, above and below, so that the
+scrollbar and every position stay what they were.
+
+Drawing every line made a file of 10,000 lines 190,000 elements: it took
+most of a second to open or to switch back to, and every key typed was laid
+out against all of them.
+
+-}
+type alias Window =
+    { start : Int, end : Int, above : Int, below : Int }
+
+
+{-| How tall the visible part is taken to be before it is known (it is
+known from the first time the editor is scrolled): generously, because what
+matters is that it is never taller than this.
+-}
+unknownViewportHeight : Int
+unknownViewportHeight =
+    3200
+
+
+{-| Lines drawn beyond the visible part on either side, so that scrolling
+shows text and not the empty block while the next window is being drawn, and
+so that a window made taller is still filled.
+-}
+windowMarginLines : Int
+windowMarginLines =
+    40
+
+
+{-| The window moves in steps of this many lines, so that scrolling within a
+step draws nothing new.
+-}
+windowStepLines : Int
+windowStepLines =
+    20
+
+
+{-| The first line of the window for a scroll position.
+-}
+windowStart : Int -> Int
+windowStart scrollTop =
+    max 0 ((scrollTop // Constants.lineHeight - windowMarginLines) // windowStepLines * windowStepLines)
+
+
+{-| How many lines the window holds for a visible part of this height (0:
+not known yet). In whole steps, like the start.
+-}
+windowLength : Int -> Int
+windowLength viewportHeight =
+    let
+        visible =
+            (if viewportHeight > 0 then
+                viewportHeight
+
+             else
+                unknownViewportHeight
+            )
+                // Constants.lineHeight
+                + 1
+    in
+    ((visible + 2 * windowMarginLines + windowStepLines) // windowStepLines + 1) * windowStepLines
+
+
+{-| The window of so many lines that starts at a line, in a file of so many
+lines.
+-}
+window : Int -> Int -> Int -> Window
+window start length numberOfLines =
+    let
+        -- a scroll position from before the file got shorter
+        first =
+            clamp 0 (max 0 (numberOfLines - length)) start
+
+        end =
+            min numberOfLines (first + length)
+    in
+    { start = first
+    , end = end
+    , above = first * Constants.lineHeight
+    , below = (numberOfLines - end) * Constants.lineHeight
+    }
+
+
+spacer : Int -> Html.Html msg
+spacer height =
+    Html.div [ Html.Attributes.style "height" (String.fromInt height ++ "px") ] []
+
+
+viewLineNumbers : Config -> Int -> Int -> List Editor.Msg.RenderableLine -> Html.Html msg
+viewLineNumbers config start length renderableLines =
     let
         numberOfLines =
             List.length renderableLines
+
+        drawn =
+            window start length numberOfLines
     in
     Html.div
         ([ Html.Attributes.style "width" ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth numberOfLines) ++ "px")
          ]
             ++ editorLineNumbersStyles config
         )
-        (List.map (\index -> Html.div [] [ Html.text (String.fromInt index) ]) (List.range 1 numberOfLines))
+        (spacer drawn.above
+            :: List.map (\index -> Html.div [] [ Html.text (String.fromInt index) ]) (List.range (drawn.start + 1) drawn.end)
+            ++ [ spacer drawn.below ]
+        )
 
 
-viewRendered : Config -> Maybe Editor.Syntax.Types.Syntax -> List Editor.Msg.RenderableLine -> Html.Html Msg
-viewRendered config syntax renderableLines =
+viewRendered : Config -> Int -> Int -> Maybe Editor.Syntax.Types.Syntax -> List Editor.Msg.RenderableLine -> Html.Html Msg
+viewRendered config start length syntax renderableLines =
+    let
+        numberOfLines =
+            List.length renderableLines
+
+        drawn =
+            window start length numberOfLines
+    in
     Html.Keyed.node "div"
         ([ onScrollX Editor.Msg.RenderedScroll
          , id "editor-rendered"
-         , style "width" ("calc(100% - " ++ ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth (List.length renderableLines)) ++ "px"))
+         , style "width" ("calc(100% - " ++ ((String.fromFloat <| Editor.Lib.getEditorLineNumbersWidth config.characterWidth numberOfLines) ++ "px"))
          ]
             ++ renderedStyles config
         )
-        (List.indexedMap
-            (viewKeyedLine config syntax)
-            renderableLines
+        (( "above", spacer drawn.above )
+            :: (renderableLines
+                    |> List.drop drawn.start
+                    |> List.take (drawn.end - drawn.start)
+                    |> List.indexedMap (\index line -> viewKeyedLine config syntax (drawn.start + index) line)
+               )
+            ++ [ ( "below", spacer drawn.below ) ]
         )
 
 
@@ -208,7 +315,13 @@ onScrollX tagger =
 
 onScrollY : (ScrollTop -> msg) -> Html.Attribute msg
 onScrollY tagger =
-    Html.Events.on "scroll" (Decode.map tagger (Decode.map ScrollTop (Decode.at [ "target", "scrollTop" ] Decode.int)))
+    Html.Events.on "scroll"
+        (Decode.map tagger
+            (Decode.map2 ScrollTop
+                (Decode.at [ "target", "scrollTop" ] Decode.int)
+                (Decode.oneOf [ Decode.at [ "target", "clientHeight" ] Decode.int, Decode.succeed 0 ])
+            )
+        )
 
 
 viewLine : Config -> Maybe Editor.Syntax.Types.Syntax -> Int -> Editor.Msg.RenderableLine -> Html.Html Msg
@@ -254,7 +367,7 @@ viewEditor model =
         , Html.span [ Html.Attributes.id "character-width", Html.Attributes.style "position" "absolute", Html.Attributes.style "left" "500px", Html.Attributes.style "visibility" "hidden" ]
             [ Html.text "0"
             ]
-        , Html.Lazy.lazy3 viewRendered model.config model.syntax model.travelable.renderableLines
+        , Html.Lazy.lazy5 viewRendered model.config (windowStart model.travelable.scrollTop) (windowLength model.viewportHeight) model.syntax model.travelable.renderableLines
         , Html.Lazy.lazy4 Editor.Lib.renderCursor
             model.config
             model.travelable.cursorPosition
@@ -286,7 +399,7 @@ view model =
         )
         [ case model.config.showLineNumbers of
             True ->
-                Html.Lazy.lazy2 viewLineNumbers model.config model.travelable.renderableLines
+                Html.Lazy.lazy4 viewLineNumbers model.config (windowStart model.travelable.scrollTop) (windowLength model.viewportHeight) model.travelable.renderableLines
 
             False ->
                 Html.text ""

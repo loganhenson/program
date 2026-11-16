@@ -710,6 +710,7 @@ init active file contents config ports =
     , selectedCompletionIndex = 0
     , symbols = []
     , ports = ports
+    , viewportHeight = 0
     }
 
 
