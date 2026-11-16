@@ -6,7 +6,7 @@ use std::{
   thread,
 };
 use serde::{Deserialize, Serialize};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 /// Stop walking once we've accumulated this many file-tree entries.
 /// Protects against accidental opens of `~` or other huge directories.
@@ -36,6 +36,17 @@ const SKIP_DIR_NAMES: &[&str] = &[
   ".venv",
   "venv",
 ];
+
+/// The order a directory is listed in: folders first, then files, each by
+/// name without regard to case. (The file system's own order is arbitrary.)
+fn listing_order(a: &DirEntry, b: &DirEntry) -> std::cmp::Ordering {
+  let key = |entry: &DirEntry| {
+    let name = entry.file_name().to_string_lossy().to_string();
+    // `path().is_dir()` follows a link, as the walk itself does
+    (!entry.path().is_dir(), name.to_lowercase(), name)
+  };
+  key(a).cmp(&key(b))
+}
 
 fn should_skip_dir(name: &str) -> bool {
   SKIP_DIR_NAMES.iter().any(|n| *n == name)
@@ -184,6 +195,7 @@ fn directory_tree(
         .min_depth(1)
         .max_depth(1)
         .follow_links(false)
+        .sort_by(listing_order)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter_map(|entry| {

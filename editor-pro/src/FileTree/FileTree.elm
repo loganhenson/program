@@ -376,11 +376,12 @@ view maybeFileTreeModel =
                     ShowContextMenu
                     (noFileOrDirectoryContextMenu fileTreeModel.fileTree.path)
                 , class "h-full"
+                , style "padding" "4px 0"
                 , onClick FileTreeClicked
                 ]
                 [ viewContextMenu fileTreeModel.contextMenu
                 , viewDeleteDialog fileTreeModel.deleting
-                , viewChildren
+                , viewChildren 0
                     fileTreeModel.fileTree
                     fileTreeModel.activeFile
                     fileTreeModel.openDirectories
@@ -390,11 +391,128 @@ view maybeFileTreeModel =
                 ]
 
 
-fileTreeIcon : List (Attribute msg) -> (Octicons.Options -> Html.Html msg) -> Html.Html msg
-fileTreeIcon attributes icon =
-    div ([ class "flex items-center justify-center w-6 h-6", style "min-width" "24px" ] ++ attributes)
-        [ defaultOptions |> Octicons.class "h-4 w-4" |> color "" |> icon
+{-| How far each level of the tree is indented.
+-}
+indent : Int
+indent =
+    16
+
+
+{-| A row starts this far from the left edge, by how deep it is in the tree.
+-}
+rowPadding : Int -> Attribute msg
+rowPadding depth =
+    style "padding-left" (String.fromInt (8 + depth * indent) ++ "px")
+
+
+{-| Every row is laid out the same way: a slot for the chevron, a slot for
+the icon, then the name. A file has an empty chevron slot, so that names at
+the same depth line up whether or not the row can be opened.
+-}
+rowAttributes : Int -> List (Attribute msg)
+rowAttributes depth =
+    [ class "file-tree-row flex items-center whitespace-no-wrap"
+    , rowPadding depth
+    , style "height" "24px"
+    , style "line-height" "24px"
+    , style "font-size" "13px"
+    , style "cursor" "default"
+    ]
+
+
+chevronSlot : List (Attribute msg) -> Maybe (Octicons.Options -> Html.Html msg) -> Html.Html msg
+chevronSlot attributes maybeIcon =
+    div
+        ([ class "file-tree-chevron flex items-center justify-center"
+         , style "width" "16px"
+         , style "min-width" "16px"
+         , style "height" "24px"
+         ]
+            ++ attributes
+        )
+        [ case maybeIcon of
+            Just icon ->
+                defaultOptions |> Octicons.class "h-3 w-3" |> color "#9aa3b2" |> icon
+
+            Nothing ->
+                text ""
         ]
+
+
+iconSlot : String -> (Octicons.Options -> Html.Html msg) -> Html.Html msg
+iconSlot iconColor icon =
+    div
+        [ class "flex items-center justify-center"
+        , style "width" "16px"
+        , style "min-width" "16px"
+        , style "height" "24px"
+        , style "margin-right" "6px"
+        ]
+        [ defaultOptions |> Octicons.class "h-4 w-4" |> color iconColor |> icon ]
+
+
+{-| Colors of the tree. Folders stand out from files, a file's icon hints
+at what kind of file it is, and things that are rarely opened are dimmer.
+-}
+folderColor : String
+folderColor =
+    "#7fa9ee"
+
+
+dimColor : String
+dimColor =
+    "#727a86"
+
+
+selectedColor : String
+selectedColor =
+    "#ffffff"
+
+
+fileIconColor : String -> String
+fileIconColor name =
+    let
+        extension =
+            case String.split "." name of
+                _ :: rest ->
+                    List.Extra.last rest |> Maybe.withDefault "" |> String.toLower
+
+                [] ->
+                    ""
+    in
+    if List.member extension [ "rs" ] then
+        "#e0884a"
+
+    else if List.member extension [ "elm" ] then
+        "#5fb4cb"
+
+    else if List.member extension [ "php" ] then
+        "#a394e6"
+
+    else if List.member extension [ "js", "mjs", "cjs", "ts", "jsx", "tsx" ] then
+        "#e2c95c"
+
+    else if List.member extension [ "css", "scss", "html" ] then
+        "#e08aa8"
+
+    else if List.member extension [ "md", "txt" ] then
+        "#8fb3d9"
+
+    else if List.member extension [ "sh", "zsh", "bash" ] then
+        "#8fc46b"
+
+    else
+        -- configuration, data, lock files and everything else
+        "#8b93a1"
+
+
+fileNameColor : String -> String
+fileNameColor name =
+    if String.startsWith "." name then
+        "#9aa1ab"
+
+    else
+        "#d3d7de"
 
 
 viewDeleteDialog : Maybe (List FileOrDirectory) -> Html.Html Msg
@@ -476,21 +594,21 @@ viewContextMenu maybeContextMenu =
             text ""
 
 
-viewChildren : FileTree.Types.FileTree -> Maybe String -> Dict String FileOrDirectory -> Dict String FileOrDirectory -> Maybe FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
-viewChildren fileTree activeFile openDirectories selectedPaths creatingNewDirectory maybeError =
+viewChildren : Int -> FileTree.Types.FileTree -> Maybe String -> Dict String FileOrDirectory -> Dict String FileOrDirectory -> Maybe FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
+viewChildren depth fileTree activeFile openDirectories selectedPaths creatingNewDirectory maybeError =
     case fileTree.type_ of
         FileOrDirectoryOpaque ->
-            viewOpaqueDirectory fileTree
+            viewOpaqueDirectory depth fileTree
 
         _ ->
             case fileTree.children of
                 -- Directory
                 Just (FileTree.Types.Children nextChildren) ->
-                    viewDirectory fileTree nextChildren activeFile openDirectories selectedPaths creatingNewDirectory maybeError
+                    viewDirectory depth fileTree nextChildren activeFile openDirectories selectedPaths creatingNewDirectory maybeError
 
                 -- File
                 Nothing ->
-                    viewFile fileTree activeFile selectedPaths
+                    viewFile depth fileTree activeFile selectedPaths
 
 
 {-| Rendered for directories the walker chose not to recurse into
@@ -498,24 +616,24 @@ viewChildren fileTree activeFile openDirectories selectedPaths creatingNewDirect
 project but with a muted style + no expand chevron so it's obvious the
 tree won't open here.
 -}
-viewOpaqueDirectory : FileTree -> Html.Html Msg
-viewOpaqueDirectory fileTree =
+viewOpaqueDirectory : Int -> FileTree -> Html.Html Msg
+viewOpaqueDirectory depth fileTree =
     div
-        [ class "pl-6 whitespace-no-wrap w-auto"
-        , id fileTree.path
-        , title "Not traversed (vendor / cache / build output)"
-        , style "color" "#5a6068"
-        , style "font-style" "italic"
-        , style "cursor" "default"
-        ]
-        [ div
-            [ class "flex w-full" ]
-            [ fileTreeIcon [] fileDirectory, text fileTree.name ]
+        (rowAttributes depth
+            ++ [ id fileTree.path
+               , title "Not traversed (vendor / cache / build output)"
+               , style "color" dimColor
+               , style "font-style" "italic"
+               ]
+        )
+        [ chevronSlot [] Nothing
+        , iconSlot dimColor fileDirectory
+        , text fileTree.name
         ]
 
 
-viewFile : FileTree -> Maybe String -> Dict String FileOrDirectory -> Html.Html Msg
-viewFile fileTree activeFile selectedPaths =
+viewFile : Int -> FileTree -> Maybe String -> Dict String FileOrDirectory -> Html.Html Msg
+viewFile depth fileTree activeFile selectedPaths =
     let
         isActive =
             case activeFile of
@@ -527,23 +645,45 @@ viewFile fileTree activeFile selectedPaths =
 
         isSelected =
             Dict.member fileTree.path selectedPaths
+
+        name =
+            String.Extra.rightOfBack "/" fileTree.path
     in
     div
-        [ onClick (SelectFileOrDirectory (treeNodeToFileOrDirectory fileTree))
-        , onContextMenu ShowContextMenu (fileOrDirectoryContextMenu (FileOrDirectory fileTree.path (basename fileTree.path) FileOrDirectoryFile))
-        , onDoubleClick (ActivateFile fileTree.path)
-        , class "pl-6 whitespace-no-wrap w-auto"
+        (rowAttributes depth
+            ++ [ onClick (SelectFileOrDirectory (treeNodeToFileOrDirectory fileTree))
+               , onContextMenu ShowContextMenu (fileOrDirectoryContextMenu (FileOrDirectory fileTree.path (basename fileTree.path) FileOrDirectoryFile))
+               , onDoubleClick (ActivateFile fileTree.path)
 
-        -- element.scrollIntoView
-        , id fileTree.path
-        , classList
-            [ ( "bg-blue-700", isSelected )
-            , ( "text-blue-500", isActive && not isSelected )
-            ]
-        ]
-        [ div
-            [ class "flex w-full" ]
-            [ fileTreeIcon [] file, text (String.Extra.rightOfBack "/" fileTree.path) ]
+               -- element.scrollIntoView
+               , id fileTree.path
+               , classList
+                    [ ( "bg-blue-700", isSelected )
+                    , ( "file-tree-active", isActive )
+                    ]
+               , style "color"
+                    (if isSelected then
+                        selectedColor
+
+                     else if isActive then
+                        -- the file that is open in the editor
+                        "#8fb8ff"
+
+                     else
+                        fileNameColor name
+                    )
+               ]
+        )
+        [ chevronSlot [] Nothing
+        , iconSlot
+            (if isSelected then
+                selectedColor
+
+             else
+                fileIconColor name
+            )
+            file
+        , text name
         ]
 
 
@@ -552,27 +692,65 @@ treeNodeToFileOrDirectory fileTree =
     FileOrDirectory fileTree.path fileTree.name fileTree.type_
 
 
-viewDirectory : FileTree.Types.FileTree -> List FileTree -> Maybe String -> Dict String FileOrDirectory -> Dict String FileOrDirectory -> Maybe FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
-viewDirectory fileTree children activeFile openDirectories selectedPaths creatingNew maybeError =
+viewDirectory : Int -> FileTree.Types.FileTree -> List FileTree -> Maybe String -> Dict String FileOrDirectory -> Dict String FileOrDirectory -> Maybe FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
+viewDirectory depth fileTree children activeFile openDirectories selectedPaths creatingNew maybeError =
     let
-        nameElement =
-            div
-                [ onClick (SelectFileOrDirectory (treeNodeToFileOrDirectory fileTree))
-                , onContextMenu ShowContextMenu (fileOrDirectoryContextMenu (FileOrDirectory fileTree.path (basename fileTree.path) FileOrDirectoryDirectory))
-                , class "flex fill-current text-white items-center whitespace-no-wrap w-full"
+        isOpen =
+            Dict.member fileTree.path openDirectories
 
-                -- element.scrollIntoView
-                , id fileTree.path
-                ]
-                [ fileTreeIcon [] fileDirectory
-                , basename fileTree.path |> text
-                ]
         isSelected =
             Dict.member fileTree.path selectedPaths
 
-        -- The directory's own row is highlighted like any selected entry.
-        selected =
-            classList [ ( "bg-blue-700", isSelected ) ]
+        -- The directory's own row. The chevron opens and closes it; the rest
+        -- of the row selects it.
+        row =
+            div
+                (rowAttributes depth
+                    ++ [ -- element.scrollIntoView
+                         id fileTree.path
+                       , classList [ ( "bg-blue-700", isSelected ) ]
+                       , style "color"
+                            (if isSelected then
+                                selectedColor
+
+                             else
+                                "#eef0f3"
+                            )
+                       ]
+                )
+                [ chevronSlot
+                    [ onClick <|
+                        if isOpen then
+                            CloseDirectory fileTree.path
+
+                        else
+                            OpenDirectory (treeNodeToFileOrDirectory fileTree)
+                    ]
+                    (Just
+                        (if isOpen then
+                            triangleDown
+
+                         else
+                            triangleRight
+                        )
+                    )
+                , div
+                    [ onClick (SelectFileOrDirectory (treeNodeToFileOrDirectory fileTree))
+                    , onContextMenu ShowContextMenu (fileOrDirectoryContextMenu (FileOrDirectory fileTree.path (basename fileTree.path) FileOrDirectoryDirectory))
+                    , class "flex items-center"
+                    , style "flex" "1"
+                    ]
+                    [ iconSlot
+                        (if isSelected then
+                            selectedColor
+
+                         else
+                            folderColor
+                        )
+                        fileDirectory
+                    , basename fileTree.path |> text
+                    ]
+                ]
 
         -- What is inside a selected directory goes with it (deleting the
         -- directory deletes all of it), so it is marked as part of the
@@ -587,52 +765,56 @@ viewDirectory fileTree children activeFile openDirectories selectedPaths creatin
 
             else
                 []
+
+        -- A line down from the chevron, so it can be seen which rows belong
+        -- to this directory and where it ends.
+        guide =
+            div
+                [ class "file-tree-guide"
+                , style "position" "absolute"
+                , style "top" "0"
+                , style "bottom" "0"
+                , style "left" (String.fromInt (8 + depth * indent + 7) ++ "px")
+                , style "width" "1px"
+                , style "background" "rgba(255, 255, 255, 0.1)"
+                , style "pointer-events" "none"
+                ]
+                []
     in
     div
-        [ class "flex flex-col fill-current text-white items-center w-full"
-        , style "min-width" "max-content"
-        ]
-        [ case Dict.member fileTree.path openDirectories of
-            True ->
-                div [ class "w-full" ]
-                    [ div
-                        [ class "flex pl-6", selected ]
-                        [ fileTreeIcon
-                            [ onClick <| CloseDirectory fileTree.path
-                            ]
-                            triangleDown
-                        , nameElement
-                        ]
-                    , div (class "pl-6" :: selectedContents)
-                        [ case ( Maybe.map .type_ creatingNew, Maybe.map (\v -> v.path == fileTree.path) creatingNew, creatingNew ) of
-                            ( Just FileOrDirectoryDirectory, Just True, Just justCreatingNew ) ->
-                                viewCreatingNewDirectory justCreatingNew maybeError
+        [ style "min-width" "max-content" ]
+        (if isOpen then
+            [ row
+            , div (style "position" "relative" :: selectedContents)
+                [ guide
+                , case ( Maybe.map .type_ creatingNew, Maybe.map (\v -> v.path == fileTree.path) creatingNew, creatingNew ) of
+                    ( Just FileOrDirectoryDirectory, Just True, Just justCreatingNew ) ->
+                        viewCreatingNewDirectory (depth + 1) justCreatingNew maybeError
 
-                            ( Just FileOrDirectoryFile, Just True, Just justCreatingNew ) ->
-                                viewCreatingNewFile justCreatingNew maybeError
+                    ( Just FileOrDirectoryFile, Just True, Just justCreatingNew ) ->
+                        viewCreatingNewFile (depth + 1) justCreatingNew maybeError
 
-                            _ ->
-                                text ""
-                        , div [] (List.foldr (\child acc -> viewChildren child activeFile openDirectories selectedPaths creatingNew maybeError :: acc) [] children)
-                        ]
-                    ]
+                    _ ->
+                        text ""
+                , div [] (List.foldr (\child acc -> viewChildren (depth + 1) child activeFile openDirectories selectedPaths creatingNew maybeError :: acc) [] children)
+                ]
+            ]
 
-            False ->
-                div
-                    [ class "flex w-full pl-6", selected ]
-                    [ fileTreeIcon [ onClick <| OpenDirectory (treeNodeToFileOrDirectory fileTree) ] triangleRight
-                    , nameElement
-                    ]
-        ]
+         else
+            [ row ]
+        )
 
 
-viewCreatingNewFile : FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
-viewCreatingNewFile newFile maybeError =
+viewCreatingNewFile : Int -> FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
+viewCreatingNewFile depth newFile maybeError =
     div
         [ stopClickPropagation
-        , class "pl-6 flex w-full items-center whitespace-no-wrap bg-transparent"
+        , class "flex items-center whitespace-no-wrap bg-transparent"
+        , rowPadding depth
+        , style "font-size" "13px"
         ]
-        [ fileTreeIcon [] file
+        [ chevronSlot [] Nothing
+        , iconSlot (fileIconColor newFile.name) file
         , form [ onSubmit (CreateFile (newFile.path ++ "/" ++ newFile.name)), class "m-0 flex flex-col" ]
             [ input
                 [ class "focus:outline-hidden focus:shadow-outline bg-lightgray border"
@@ -663,14 +845,16 @@ viewCreatingNewFile newFile maybeError =
         ]
 
 
-viewCreatingNewDirectory : FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
-viewCreatingNewDirectory newDir maybeError =
+viewCreatingNewDirectory : Int -> FileOrDirectory -> Maybe FileTreeError -> Html.Html Msg
+viewCreatingNewDirectory depth newDir maybeError =
     div
         [ stopClickPropagation
-        , class "pl-6 flex w-full items-center whitespace-no-wrap bg-transparent"
+        , class "flex items-center whitespace-no-wrap bg-transparent"
+        , rowPadding depth
+        , style "font-size" "13px"
         ]
-        [ fileTreeIcon [] triangleDown
-        , fileTreeIcon [] fileDirectory
+        [ chevronSlot [] (Just triangleRight)
+        , iconSlot folderColor fileDirectory
         , form [ onSubmit (CreateDirectory (newDir.path ++ "/" ++ newDir.name)), class "m-0 flex flex-col" ]
             [ input
                 [ class "focus:outline-hidden focus:shadow-outline bg-lightgray border"
