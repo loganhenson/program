@@ -453,6 +453,11 @@ export default {
       window.vide.ports.receivePaste.send(await readText())
     })
 
+    // An edit that would make the file more than the editor opens is not made
+    window.vide.ports.reportRefusedEdit.subscribe((message) => {
+      this.receiveNotification({ source: 'Editor', type: 'info', message })
+    })
+
     window.vide.ports.requestCreateFile.subscribe(async (file) => {
       await this.createFile(emit, file)
     })

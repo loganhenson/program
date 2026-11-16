@@ -35,6 +35,7 @@ editorPorts =
                 Json.Encode.string code
     , requestCharacterWidth = Ports.requestCharacterWidth
     , receiveCharacterWidth = Ports.receiveCharacterWidth
+    , reportRefusedEdit = Ports.reportRefusedEdit
     }
 
 

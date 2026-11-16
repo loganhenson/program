@@ -39,7 +39,12 @@ async function proceed() {
 
   // Diagnostics, off unless EDITOR_DOM_DUMP is set (see `dom_dump` in main.rs)
   if (await invoke('dom_dump', { html: null })) {
-    setInterval(() => invoke('dom_dump', { html: document.documentElement.outerHTML }), 1000)
+    // (how far the editor is scrolled is not part of the DOM's text, so it is added)
+    const scrolled = () => {
+      const editor = document.getElementById('editor-container')
+      return editor ? `<!-- editor-container scrollTop=${Math.round(editor.scrollTop)} scrollHeight=${editor.scrollHeight} clientHeight=${editor.clientHeight} -->` : ''
+    }
+    setInterval(() => invoke('dom_dump', { html: document.documentElement.outerHTML + scrolled() }), 1000)
   }
 
   // `DEV_DIRECTORY=some/project npm start` opens that project right away

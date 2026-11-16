@@ -28,6 +28,9 @@ type alias Ports =
     , requestCharacterWidth : () -> Cmd Msg
     , receiveCharacterWidth : (Float -> Msg) -> Sub Msg
     , requestCompletion : CompletionRequest -> Cmd Msg
+
+    -- an edit was not made, and why (see Editor.Limits)
+    , reportRefusedEdit : String -> Cmd Msg
     }
 
 

@@ -271,14 +271,19 @@ const MAX_FILE_LINES: usize = 10_000;
 /// (one line!) but rendering that single span chokes the editor. 500
 /// chars is well above hand-written code (style guides land at 80–120)
 /// and most JSON blobs while still being well below anything minified.
+///
+/// Counted as the editor counts (UTF-16 code units), and the same number
+/// as `maxLineLength` in the editor's `Editor/Limits.elm`: the editor does
+/// not let a line grow past it, so that what it saves it can open again.
 const MAX_LINE_LENGTH: usize = 500;
 
 /// Byte cap derived from the line and length caps: no file with both
 /// `MAX_FILE_LINES` lines of `MAX_LINE_LENGTH` chars can exceed this
-/// (each line plus its trailing newline). Lets us reject oversize files
-/// at stat time without reading them. Keeping it derived also prevents
-/// drift between the three caps as the others are tuned.
-const MAX_FILE_BYTES: u64 = (MAX_FILE_LINES as u64) * (MAX_LINE_LENGTH as u64 + 1);
+/// (each line plus its trailing newline; a char the editor counts as one
+/// is at most three bytes on disk). Lets us reject oversize files at stat
+/// time without reading them. Keeping it derived also prevents drift
+/// between the three caps as the others are tuned.
+const MAX_FILE_BYTES: u64 = (MAX_FILE_LINES as u64) * (MAX_LINE_LENGTH as u64 * 3 + 1);
 
 fn emit_notification(window: &WebviewWindow, type_: &str, message: String) {
   let payload = serde_json::json!({
@@ -611,6 +616,17 @@ enum LoadDecision {
   ReadError(String),
 }
 
+/// The length of a line as the editor counts it: in UTF-16 code units.
+/// (Never more than its bytes, so a line within the limit in bytes is not
+/// counted again.)
+fn line_length(line: &str, limit: usize) -> usize {
+  if line.len() <= limit {
+    line.len()
+  } else {
+    line.encode_utf16().count()
+  }
+}
+
 fn load_file_with_cap(
   path: &str,
   byte_limit: u64,
@@ -639,8 +655,9 @@ fn load_file_with_cap(
   let mut max_length = 0usize;
   for line in contents.lines() {
     line_count += 1;
-    if line.len() > max_length {
-      max_length = line.len();
+    let length = line_length(line, line_length_limit);
+    if length > max_length {
+      max_length = length;
     }
   }
   if max_length > line_length_limit {
@@ -2162,6 +2179,48 @@ mod tests {
     std::fs::write(&tmp, vec![b'a'; 2048]).unwrap();
     let result = load_file_with_cap(tmp.to_str().unwrap(), 1024, 100, 1000);
     assert!(matches!(result, LoadDecision::TooLarge { size: 2048, limit: 1024 }));
+    let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[test]
+  fn a_line_is_measured_as_the_editor_measures_it() {
+    // 400 characters that take three bytes each: 1200 bytes, but 400 to the editor
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-wide-{}", std::process::id()));
+    let body = "語".repeat(400);
+    std::fs::write(&tmp, body.as_bytes()).unwrap();
+    assert_eq!(load_file_with_cap(tmp.to_str().unwrap(), MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH), LoadDecision::Ok(body));
+    // ...and 501 of them is one too many
+    std::fs::write(&tmp, "語".repeat(501).as_bytes()).unwrap();
+    assert!(matches!(
+      load_file_with_cap(tmp.to_str().unwrap(), MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH),
+      LoadDecision::LineTooLong { length: 501, limit: 500 }
+    ));
+    // a character outside the basic plane is two to the editor
+    std::fs::write(&tmp, "😀".repeat(251).as_bytes()).unwrap();
+    assert!(matches!(
+      load_file_with_cap(tmp.to_str().unwrap(), MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH),
+      LoadDecision::LineTooLong { length: 502, limit: 500 }
+    ));
+    let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[test]
+  fn the_largest_file_the_editor_holds_is_one_it_opens() {
+    // the editor's own limits (it refuses an edit that would pass them) are these
+    let limits = include_str!("../../../editor/src/Editor/Limits.elm");
+    let compact: String = limits.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(compact.contains(&format!("maxLines = {}", MAX_FILE_LINES)), "Editor.Limits.maxLines is not {}", MAX_FILE_LINES);
+    assert!(compact.contains(&format!("maxLineLength = {}", MAX_LINE_LENGTH)), "Editor.Limits.maxLineLength is not {}", MAX_LINE_LENGTH);
+
+    // every line as long as it may be, of characters as wide on disk as they get, and a final newline
+    let tmp = std::env::temp_dir().join(format!("editor-pro-load-largest-{}", std::process::id()));
+    let line = "語".repeat(MAX_LINE_LENGTH);
+    let body = format!("{}\n", vec![line; MAX_FILE_LINES].join("\n"));
+    std::fs::write(&tmp, body.as_bytes()).unwrap();
+    assert!(matches!(
+      load_file_with_cap(tmp.to_str().unwrap(), MAX_FILE_BYTES, MAX_FILE_LINES, MAX_LINE_LENGTH),
+      LoadDecision::Ok(_)
+    ));
     let _ = std::fs::remove_file(&tmp);
   }
 

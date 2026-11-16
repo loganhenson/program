@@ -59,6 +59,11 @@ port requestCompletion : Json.Encode.Value -> Cmd msg
 port requestChange : String -> Cmd msg
 
 
+{-| An edit the editor did not make, and why: it is shown as a notification.
+-}
+port reportRefusedEdit : String -> Cmd msg
+
+
 port requestCopy : String -> Cmd msg
 
 

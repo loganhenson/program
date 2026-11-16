@@ -1,5 +1,6 @@
 module Editor exposing (initialConfig, initialPorts, subscriptions, update, view, window, windowLength, windowStart)
 
+import Editor.Limits
 import Browser.Events exposing (onMouseUp)
 import Editor.Clipboard
 import Editor.Completions
@@ -45,11 +46,30 @@ initialPorts =
     , requestCharacterWidth = \_ -> Cmd.none
     , receiveCharacterWidth = \_ -> Sub.none
     , requestSave = \_ -> Cmd.none
+    , reportRefusedEdit = \_ -> Cmd.none
     }
 
 
+{-| Whatever the edit (typing, a paste, a completion), one that would take the
+file past what the editor holds is not made: the file could be saved like
+that, and then not be opened again.
+-}
 update : Editor.Msg.Msg -> Editor.Msg.Model -> ( Editor.Msg.Model, Cmd Editor.Msg.Msg )
 update msg model =
+    let
+        ( next, cmd ) =
+            updateWithoutLimits msg model
+    in
+    case Editor.Limits.refusal model.travelable.renderableLines next.travelable.renderableLines of
+        Nothing ->
+            ( next, cmd )
+
+        Just reason ->
+            ( model, model.ports.reportRefusedEdit reason )
+
+
+updateWithoutLimits : Editor.Msg.Msg -> Editor.Msg.Model -> ( Editor.Msg.Model, Cmd Editor.Msg.Msg )
+updateWithoutLimits msg model =
     case model.active of
         False ->
             ( model, Cmd.none )
