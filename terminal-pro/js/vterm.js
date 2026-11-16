@@ -189,9 +189,15 @@ module.exports = {
     })
 
     window.vterm.ports.requestSetupTerminalResizeObserver.subscribe(() => {
+      // One observer, however often this is asked for (it is, for every
+      // project and every terminal that is opened): the ones before used to
+      // stay, each sending its own resize for every change of the window.
+      if (this.terminalResizeObserver) this.terminalResizeObserver.disconnect()
+      clearInterval(this.terminalResizeObserverInterval)
+
       let prevWidthIncrement = 0;
       let prevHeightIncrement = 0;
-      const terminalResizeObserver = new ResizeObserver(_debounce(50, terminals => {
+      const terminalResizeObserver = this.terminalResizeObserver = new ResizeObserver(_debounce(50, terminals => {
         if (terminals[0].contentRect.height <= 0 && terminals[0].contentRect.width <= 0) {
           return
         }
@@ -221,7 +227,7 @@ module.exports = {
       // a self-reinforcing PTY size that ignores the actual visible area —
       // the last rows end up below the window fold. #terminal-container
       // has h-full (= viewport), so its content rect is the real viewport.
-      let interval = setInterval(() => {
+      let interval = this.terminalResizeObserverInterval = setInterval(() => {
         if (document.querySelector('#terminal-container')) {
           terminalResizeObserver.observe(document.querySelector('#terminal-container'))
           clearInterval(interval)

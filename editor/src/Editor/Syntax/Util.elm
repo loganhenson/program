@@ -1,4 +1,4 @@
-module Editor.Syntax.Util exposing (getCurrentToken, highlight, tokenize, viewLine)
+module Editor.Syntax.Util exposing (fillInTokens, getCurrentToken, highlight, maxHighlightedLineLength, tokenize, viewLine)
 
 import Editor.Constants as Constants
 import Editor.Msg exposing (RenderableLine)
@@ -12,42 +12,65 @@ import List.Extra
 import Regex
 
 
+{-| A line longer than this is shown without colors. Coloring makes an
+element for every token: on a line of tens of thousands of characters (a
+minified bundle, a pasted blob) that is tens of thousands of elements, built
+again at every key typed on the line.
+-}
+maxHighlightedLineLength : Int
+maxHighlightedLineLength =
+    5000
+
+
+{-| The tokens of a line with the text between them filled in as tokens
+without a class, so that together they cover the line from start to end.
+
+One pass over the tokens. (This used to look through all tokens for every
+character of the line, and to append to the end of a list for every token:
+the time went up with the square of the line's length, and a long line took
+seconds at every key.)
+
+-}
+fillInTokens : String -> List Token -> List Token
+fillInTokens contents tokens =
+    let
+        plain from to =
+            { class = "", styles = [], index = from, length = to - from }
+
+        ( covered, reversed ) =
+            List.foldl
+                (\token ( position, acc ) ->
+                    if token.index < position || token.length <= 0 then
+                        -- starts inside what is already covered, or is empty
+                        ( position, acc )
+
+                    else if token.index > position then
+                        ( token.index + token.length, token :: plain position token.index :: acc )
+
+                    else
+                        ( token.index + token.length, token :: acc )
+                )
+                ( 0, [] )
+                tokens
+
+        length =
+            String.length contents
+    in
+    List.reverse
+        (if covered < length then
+            plain covered length :: reversed
+
+         else
+            reversed
+        )
+
+
 highlight : String -> List MultilineSymbol -> List Editor.Syntax.Types.Error -> List Token -> List (Html.Html msg)
 highlight contents symbols lineErrors tokens =
     -- ensure contents not covered by symbols are still tokenized
     let
-        ( _, _, filledInTokens ) =
-            List.Extra.indexedFoldl
-                (\charIndex char ( tokenIndex, collected, acc ) ->
-                    if charIndex < tokenIndex then
-                        -- if the current char is before the last token position
-                        -- continue
-                        ( tokenIndex, collected, acc )
-
-                    else
-                        case List.Extra.find (\token -> token.index == charIndex) tokens of
-                            Just token ->
-                                -- if there is a token that covers this char, insert it and update the tokenIndex
-                                case String.length collected of
-                                    0 ->
-                                        ( token.index + token.length, "", acc ++ [ token ] )
-
-                                    len ->
-                                        ( token.index + token.length, "", List.concat [ acc, [ { class = "", styles = [], index = charIndex - len, length = len } ], [ token ] ] )
-
-                            Nothing ->
-                                if charIndex == String.length contents - 1 then
-                                    let
-                                        len =
-                                            String.length collected
-                                    in
-                                    ( 0, "", acc ++ [ { class = "", styles = [], index = charIndex - len, length = len + 1 } ] )
-
-                                else
-                                    ( tokenIndex + 1, collected ++ char, acc )
-                )
-                ( 0, "", [] )
-                (String.split "" contents)
+        filledInTokens =
+            fillInTokens contents tokens
 
         tokensLength =
             List.length tokens
@@ -145,7 +168,15 @@ viewLine syntax contents symbols errors =
                     ]
                 ]
                 (Maybe.withDefault (text "") fullLineError
-                    :: highlight contents symbols errors (tokenize contents s)
+                    :: highlight contents
+                        symbols
+                        errors
+                        (if String.length contents > maxHighlightedLineLength then
+                            []
+
+                         else
+                            tokenize contents s
+                        )
                 )
 
 

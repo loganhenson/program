@@ -43,28 +43,18 @@ init { tree, flat } activeFile =
 
 refresh : Model -> FileTreeAndFlat -> Model
 refresh oldModel { tree, flat } =
-    -- If the active file no longer exists, unselect it
     let
-        activeFileDeleted =
-            case oldModel.activeFile of
-                Just activeFile ->
-                    List.member activeFile (List.map .path flat)
-
-                Nothing ->
-                    False
-
         flatPaths =
             Dict.fromList (List.map (\a -> ( a.path, a )) flat)
     in
     { oldModel
         | fileTree = tree
         , flatTree = flat
-        , activeFile =
-            if activeFileDeleted then
-                Nothing
 
-            else
-                oldModel.activeFile
+        -- The open file stays marked. (It used to be unmarked at every
+        -- refresh in which it was still there: the test was the wrong way
+        -- round. A file that is gone has no row to mark.)
+        , activeFile = oldModel.activeFile
         , selectedPaths = Dict.intersect oldModel.selectedPaths flatPaths
         , creating =
             case oldModel.creating of

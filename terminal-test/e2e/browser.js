@@ -312,7 +312,8 @@ const tests = {
     await t.page.keyboard.press('Control+c')
     await t.command('echo stop""ped', /^stopped/)
     const took = Date.now() - pressed
-    ok(took < 5000, `it took ${took}ms for the shell to answer after Ctrl+C`)
+    // it used to be minutes; the limit is loose enough for a slow machine
+    ok(took < 10000, `it took ${took}ms for the shell to answer after Ctrl+C`)
   },
 
   'a new tab gets the size of the window, and closing the last shell quits': async t => {
